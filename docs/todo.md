@@ -9,3 +9,4 @@ dashboard for easy viewing of implementations in action
 live testing.
 connectors to create PRs
 create tools for running shell commands for various projects (bun lint, bun test, dotnet build, any other runner to verify things work)
+better TUI look and feel
