@@ -16,6 +16,13 @@ interface PlanScope {
   breakingChange: boolean;
 }
 
+interface PlanStep {
+  id: string;
+  file: string;
+  action: "modify" | "create" | "delete";
+  description: string;
+}
+
 interface PlanTask {
   id: string;
   description: string;
@@ -29,6 +36,8 @@ interface Plan {
   summary: string;
   scope: PlanScope;
   tasks: PlanTask[];
+  allowed_files: string[];
+  steps: PlanStep[];
   assumptions: string[];
   outOfScope: string[];
 }
@@ -50,5 +59,6 @@ export type {
   PlannerInput,
   Plan,
   PlanScope,
+  PlanStep,
   PlanTask,
 };

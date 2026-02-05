@@ -34,6 +34,17 @@ const planSchema = z.object({
       handoffTo: z.literal("implementer"),
     })
   ),
+  allowed_files: z.array(z.string().min(1)).min(1),
+  steps: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        file: z.string().min(1),
+        action: z.enum(["modify", "create", "delete"]),
+        description: z.string().min(1),
+      })
+    )
+    .min(1),
   assumptions: z.array(z.string()),
   outOfScope: z.array(z.string()),
 });
@@ -42,7 +53,15 @@ const planJsonSchema: Record<string, unknown> = {
   name: "Plan",
   type: "object",
   additionalProperties: false,
-  required: ["summary", "scope", "tasks", "assumptions", "outOfScope"],
+  required: [
+    "summary",
+    "scope",
+    "tasks",
+    "allowed_files",
+    "steps",
+    "assumptions",
+    "outOfScope",
+  ],
   properties: {
     summary: { type: "string" },
     scope: {
@@ -78,6 +97,26 @@ const planJsonSchema: Record<string, unknown> = {
           estimatedFiles: { type: "integer", minimum: 1 },
           requiresTests: { type: "boolean" },
           handoffTo: { type: "string", enum: ["implementer"] },
+        },
+      },
+    },
+    allowed_files: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+    },
+    steps: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "file", "action", "description"],
+        properties: {
+          id: { type: "string" },
+          file: { type: "string" },
+          action: { type: "string", enum: ["modify", "create", "delete"] },
+          description: { type: "string" },
         },
       },
     },
@@ -117,7 +156,7 @@ const parsePlan = (outputText: string) => {
 const createPlannerAgent = (
   options: PlannerAgentOptions = {}
 ): PlannerAgent => {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5";
+  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5-nano";
   const systemPromptPath =
     options.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_PATH;
   const developerPromptPath =

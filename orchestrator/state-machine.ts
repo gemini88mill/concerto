@@ -29,45 +29,6 @@ const createTask = (description: string): OrchestratorTask => {
   };
 };
 
-const isFileLike = (value: string) => {
-  if (value.includes("/") || value.includes("\\")) {
-    return true;
-  }
-  return /\.[a-z0-9]+$/i.test(value);
-};
-
-const collectAllowedFiles = (plan: Plan) => {
-  const files: string[] = [];
-  plan.tasks.forEach((task) => {
-    task.affectedAreas.forEach((area) => {
-      if (isFileLike(area) && !files.includes(area)) {
-        files.push(area);
-      }
-    });
-  });
-  return files;
-};
-
-const buildStepsFromPlan = (plan: Plan, allowedFiles: string[]) => {
-  const steps: ImplementorStep[] = [];
-  const fileSet = new Set(allowedFiles);
-
-  plan.tasks.forEach((task) => {
-    const file = task.affectedAreas.find((area) => fileSet.has(area));
-    if (!file) {
-      return;
-    }
-    steps.push({
-      id: task.id,
-      file,
-      action: "modify",
-      description: task.description,
-    });
-  });
-
-  return steps;
-};
-
 const buildInjectedFiles = async (allowedFiles: string[]) => {
   const injectedFiles: { path: string; content: string }[] = [];
 
@@ -87,8 +48,8 @@ const buildInjectedFiles = async (allowedFiles: string[]) => {
 };
 
 const buildHandoffFromPlan = async (plan: Plan): Promise<ImplementorHandoff> => {
-  const allowedFiles = collectAllowedFiles(plan);
-  const steps = buildStepsFromPlan(plan, allowedFiles);
+  const allowedFiles = plan.allowed_files;
+  const steps: ImplementorStep[] = plan.steps;
   const injectedFiles = await buildInjectedFiles(allowedFiles);
   const maxFiles = Math.max(1, Math.min(allowedFiles.length, 3));
 
@@ -272,7 +233,6 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
 
 export {
   buildHandoffFromPlan,
-  collectAllowedFiles,
   createTask,
   runFullPipeline,
   runImplementor,
