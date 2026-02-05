@@ -1,7 +1,10 @@
+import { resolve } from "path";
 import { z } from "zod";
 import type { ImplementorResult } from "../agents/implementor/implementor.types";
 import type { Plan } from "../agents/planner/planner.types";
-import { readJson } from "../orchestrator/artifacts";
+import { getLatestRunDir, readJson } from "../orchestrator/artifacts";
+import { isRunHandoff } from "../orchestrator/handoff";
+import type { RunHandoff } from "../orchestrator/handoff.types";
 
 const planSchema = z.object({
   summary: z.string().min(1),
@@ -68,4 +71,24 @@ export const readImplementorResultFile = async (
 ): Promise<ImplementorResult> => {
   const raw = await readJson(path);
   return implementorResultSchema.parse(raw);
+};
+
+export const resolveRunDir = async (runDir?: string) => {
+  if (runDir) {
+    return resolve(runDir);
+  }
+
+  const latest = await getLatestRunDir();
+  if (!latest) {
+    throw new Error("No runs found under .orchestrator/runs.");
+  }
+  return resolve(latest);
+};
+
+export const readRunHandoffFile = async (path: string): Promise<RunHandoff> => {
+  const raw = await readJson(path);
+  if (!isRunHandoff(raw)) {
+    throw new Error("handoff.json is missing required fields.");
+  }
+  return raw;
 };

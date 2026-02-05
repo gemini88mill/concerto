@@ -11,6 +11,7 @@ import { runImplementorStep } from "../agents/implementor/implementor.runner";
 import { createReviewerAgent } from "../agents/reviewer/reviewer.agent";
 import { createTesterAgent } from "../agents/tester/tester.agent";
 import { createRunContext, writeJson } from "./artifacts";
+import { createInitialHandoff, updateHandoff } from "./handoff";
 import type { OrchestratorConfig, OrchestratorResult, OrchestratorTask } from "./orchestrator.types";
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -185,39 +186,181 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   }
   await writeJson(`${context.run_dir}/plan.json`, planResult.value);
 
-  const handoff = await buildHandoffFromPlan(planResult.value);
-  await writeJson(`${context.run_dir}/handoff.json`, handoff);
+  const requiresTests = planResult.value.tasks.some((task) => task.requiresTests);
+  const baseHandoff = createInitialHandoff({
+    run: {
+      id: context.run_id,
+      createdAt: context.task.created_at,
+      repo: {
+        root: ".",
+        branch: "",
+        baseBranch: "",
+      },
+    },
+    task: {
+      id: context.task.task_id,
+      prompt: context.task.description,
+      mode: "full",
+    },
+    artifacts: {
+      task: "task.json",
+      plan: "plan.json",
+      implementation: "implementor.json",
+      review: "review.json",
+      tests: "test.json",
+      prDraft: "pr-draft.json",
+      implementorHandoff: "implementor-handoff.json",
+      handoff: "handoff.json",
+      handoffImplementor: "handoff.implementor.json",
+      handoffReview: "handoff.review.json",
+      handoffTest: "handoff.test.json",
+    },
+    constraints: {
+      estimatedFilesChangedLimit: planResult.value.scope.estimatedFilesChanged,
+      noBreakingChanges: !planResult.value.scope.breakingChange,
+      requireTestsForBehaviorChange: requiresTests,
+    },
+    next: {
+      agent: "implementer",
+      inputArtifacts: ["plan.json"],
+      instructions: [
+        "Implement the plan within allowed files.",
+        "Update handoff.json for reviewer.",
+      ],
+    },
+  });
 
-  if (handoff.allowed_files.length === 0 || handoff.steps.length === 0) {
+  let runHandoff = updateHandoff({
+    handoff: baseHandoff,
+    phase: "plan",
+    status: "completed",
+    artifact: "plan.json",
+    endedAt: new Date().toISOString(),
+    next: baseHandoff.next,
+  });
+
+  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+  await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
+
+  const implementorHandoff = await buildHandoffFromPlan(planResult.value);
+  await writeJson(`${context.run_dir}/implementor-handoff.json`, implementorHandoff);
+
+  if (
+    implementorHandoff.allowed_files.length === 0 ||
+    implementorHandoff.steps.length === 0
+  ) {
     const error = "Planner did not provide executable steps or allowed files.";
     await writeJson(`${context.run_dir}/implementor.error.json`, { error });
     return { ok: false, error };
   }
 
-  const implementResult = await runImplementor(handoff, resolvedConfig);
+  const implementResult = await runImplementor(implementorHandoff, resolvedConfig);
   if (!implementResult.ok || !implementResult.value) {
     await writeJson(`${context.run_dir}/implementor.error.json`, implementResult);
     return implementResult;
   }
   await writeJson(`${context.run_dir}/implementor.json`, implementResult.value);
 
-  const reviewResult = await runReviewer(handoff, implementResult.value);
+  runHandoff = updateHandoff({
+    handoff: runHandoff,
+    phase: "implement",
+    status: "completed",
+    artifact: "implementor.json",
+    endedAt: new Date().toISOString(),
+    artifacts: {
+      implementation: "implementor.json",
+    },
+    next: {
+      agent: "reviewer",
+      inputArtifacts: ["plan.json", "implementor.json"],
+      instructions: [
+        "Review the implementation against the plan and project guidelines.",
+        "If rejecting, provide actionable fixes only; do not implement.",
+      ],
+    },
+  });
+  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+  await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
+
+  const reviewResult = await runReviewer(implementorHandoff, implementResult.value);
   if (!reviewResult.ok || !reviewResult.value) {
     await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
     return reviewResult;
   }
   await writeJson(`${context.run_dir}/review.json`, reviewResult.value);
 
+  const reviewApproved = reviewResult.value.decision === "approved";
+  const reviewNext = reviewApproved
+    ? {
+        agent: "tester",
+        inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+        instructions: [
+          "Add or update tests if required by the plan.",
+          "Run the configured test command and report results.",
+        ],
+      }
+    : {
+        agent: "implementer",
+        inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+        instructions: ["Address review feedback and update the implementation."],
+      };
+
+  runHandoff = updateHandoff({
+    handoff: runHandoff,
+    phase: "review",
+    status: "completed",
+    artifact: "review.json",
+    endedAt: new Date().toISOString(),
+    artifacts: {
+      review: "review.json",
+    },
+    next: reviewNext,
+  });
+  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+  await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+
   if (reviewResult.value.decision !== "approved") {
     return { ok: false, error: `Reviewer decision: ${reviewResult.value.decision}` };
   }
 
-  const testResult = await runTester(handoff, implementResult.value, resolvedConfig);
+  const testResult = await runTester(
+    implementorHandoff,
+    implementResult.value,
+    resolvedConfig
+  );
   if (!testResult.ok || !testResult.value) {
     await writeJson(`${context.run_dir}/test.error.json`, testResult);
     return testResult;
   }
   await writeJson(`${context.run_dir}/test.json`, testResult.value);
+
+  const testsPassed = testResult.value.status === "passed";
+  const testNext = testsPassed
+    ? {
+        agent: "pr",
+        inputArtifacts: ["plan.json", "implementor.json", "review.json", "test.json"],
+        instructions: [
+          "Prepare a PR draft based on the approved implementation and tests.",
+        ],
+      }
+    : {
+        agent: "implementer",
+        inputArtifacts: ["plan.json", "implementor.json", "review.json", "test.json"],
+        instructions: ["Fix implementation issues that caused test failures."],
+      };
+
+  runHandoff = updateHandoff({
+    handoff: runHandoff,
+    phase: "test",
+    status: "completed",
+    artifact: "test.json",
+    endedAt: new Date().toISOString(),
+    artifacts: {
+      tests: "test.json",
+    },
+    next: testNext,
+  });
+  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
 
   if (testResult.value.status !== "passed") {
     return { ok: false, error: `Tester status: ${testResult.value.status}` };

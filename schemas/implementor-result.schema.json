@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ImplementorResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "stepId",
+    "diff",
+    "filesChanged",
+    "blockedReason",
+    "escalation"
+  ],
+  "properties": {
+    "status": { "type": "string", "enum": ["completed", "blocked"] },
+    "stepId": { "type": "string" },
+    "diff": { "type": "string" },
+    "filesChanged": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blockedReason": { "type": "string" },
+    "escalation": { "type": "string" }
+  }
+}

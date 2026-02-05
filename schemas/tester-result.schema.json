@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TesterResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "status",
+    "tests_added",
+    "test_summary",
+    "coverage_notes",
+    "reason",
+    "logs"
+  ],
+  "properties": {
+    "task_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["passed", "failed"] },
+    "tests_added": { "type": "array", "items": { "type": "string" } },
+    "test_summary": { "type": "string" },
+    "coverage_notes": { "type": "array", "items": { "type": "string" } },
+    "reason": { "type": "string" },
+    "logs": { "type": "string" }
+  }
+}

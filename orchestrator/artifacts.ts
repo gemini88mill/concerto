@@ -2,7 +2,7 @@ import type {
   OrchestratorRunContext,
   OrchestratorTask,
 } from "./orchestrator.types";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 
 const RUNS_ROOT = ".orchestrator/runs";
 
@@ -33,4 +33,41 @@ const createRunContext = async (
   };
 };
 
-export { RUNS_ROOT, createRunContext, readJson, writeJson };
+const getRunDirectories = async () => {
+  try {
+    const entries = await readdir(RUNS_ROOT, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => `${RUNS_ROOT}/${entry.name}`);
+  } catch {
+    return [];
+  }
+};
+
+const getLatestRunDir = async () => {
+  const runDirs = await getRunDirectories();
+  if (runDirs.length === 0) {
+    return null;
+  }
+
+  let latestDir = runDirs[0];
+  let latestTime = (await stat(runDirs[0])).mtimeMs;
+
+  for (const runDir of runDirs.slice(1)) {
+    const currentTime = (await stat(runDir)).mtimeMs;
+    if (currentTime > latestTime) {
+      latestTime = currentTime;
+      latestDir = runDir;
+    }
+  }
+
+  return latestDir;
+};
+
+export {
+  RUNS_ROOT,
+  createRunContext,
+  getLatestRunDir,
+  readJson,
+  writeJson,
+};

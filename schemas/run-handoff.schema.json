@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunHandoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run", "task", "state", "artifacts", "notes"],
+  "properties": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "createdAt", "repo"],
+      "properties": {
+        "id": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "repo": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "branch", "baseBranch"],
+          "properties": {
+            "root": { "type": "string" },
+            "branch": { "type": "string" },
+            "baseBranch": { "type": "string" }
+          }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "prompt", "mode"],
+      "properties": {
+        "id": { "type": "string" },
+        "prompt": { "type": "string" },
+        "mode": { "type": "string" }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "iteration", "maxIterations", "history"],
+      "properties": {
+        "phase": { "type": "string" },
+        "status": { "type": "string" },
+        "iteration": { "type": "integer", "minimum": 0 },
+        "maxIterations": { "type": "integer", "minimum": 1 },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["phase", "status", "endedAt", "artifact"],
+            "properties": {
+              "phase": { "type": "string" },
+              "status": { "type": "string" },
+              "endedAt": { "type": "string" },
+              "artifact": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "estimatedFilesChangedLimit": { "type": "integer", "minimum": 0 },
+        "noBreakingChanges": { "type": "boolean" },
+        "requireTestsForBehaviorChange": { "type": "boolean" }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxTokens": { "type": "integer", "minimum": 0 },
+        "maxToolCalls": { "type": "integer", "minimum": 0 },
+        "timeLimitSeconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task": { "type": "string" },
+        "plan": { "type": "string" },
+        "implementation": { "type": "string" },
+        "review": { "type": "string" },
+        "tests": { "type": "string" },
+        "prDraft": { "type": "string" },
+        "implementorHandoff": { "type": "string" },
+        "handoff": { "type": "string" },
+        "handoffImplementor": { "type": "string" },
+        "handoffReview": { "type": "string" },
+        "handoffTest": { "type": "string" }
+      }
+    },
+    "next": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "inputArtifacts", "instructions"],
+      "properties": {
+        "agent": { "type": "string" },
+        "inputArtifacts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "instructions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

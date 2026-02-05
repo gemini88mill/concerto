@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrchestratorTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "description", "created_at"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "description": { "type": "string" },
+    "created_at": { "type": "string" }
+  }
+}

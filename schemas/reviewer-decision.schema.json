@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewerDecisionResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "decision",
+    "notes",
+    "required_actions",
+    "reasons",
+    "reason",
+    "suggested_escalation"
+  ],
+  "properties": {
+    "task_id": { "type": "string" },
+    "decision": { "type": "string", "enum": ["approved", "rejected", "blocked"] },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "required_actions": { "type": "array", "items": { "type": "string" } },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "reason": { "type": "string" },
+    "suggested_escalation": { "type": "string" }
+  }
+}
