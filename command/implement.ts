@@ -6,7 +6,15 @@ import {
 } from "../orchestrator/state-machine";
 import { writeJson } from "../orchestrator/artifacts";
 import { updateHandoff } from "../orchestrator/handoff";
-import { defaultAgentRunOptions, readPlanFile, readRunHandoffFile, resolveRunDir } from "./shared";
+import {
+  defaultAgentRunOptions,
+  errorOutput,
+  readPlanFile,
+  readRunHandoffFile,
+  resolveRunDir,
+  successOutput,
+  toStepOutput,
+} from "./shared";
 
 interface ImplementOptions {
   run?: string;
@@ -22,7 +30,16 @@ export const registerImplementCommand = (program: Command) => {
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);
       if (runHandoff.next?.agent !== "implementer") {
-        console.log("handoff.json does not point to implementer as next agent.");
+        console.log(
+          JSON.stringify(
+            errorOutput(
+              "implement",
+              "handoff.json does not point to implementer as next agent."
+            ),
+            null,
+            2
+          )
+        );
         return;
       }
       const planFile = runHandoff.artifacts.plan ?? "plan.json";
@@ -34,7 +51,16 @@ export const registerImplementCommand = (program: Command) => {
         implementorHandoff.allowed_files.length === 0 ||
         implementorHandoff.steps.length === 0
       ) {
-        console.log("Plan did not provide executable steps or allowed files.");
+        console.log(
+          JSON.stringify(
+            errorOutput(
+              "implement",
+              "Plan did not provide executable steps or allowed files."
+            ),
+            null,
+            2
+          )
+        );
         return;
       }
 
@@ -44,7 +70,7 @@ export const registerImplementCommand = (program: Command) => {
       );
 
       if (!result.ok || !result.value) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(toStepOutput("implement", result), null, 2));
         return;
       }
 
@@ -69,6 +95,8 @@ export const registerImplementCommand = (program: Command) => {
       });
       await writeJson(`${runDir}/handoff.json`, updated);
       await writeJson(`${runDir}/handoff.review.json`, updated);
-      console.log(JSON.stringify(result.value, null, 2));
+      console.log(
+        JSON.stringify(successOutput("implement", result.value), null, 2)
+      );
     });
 };

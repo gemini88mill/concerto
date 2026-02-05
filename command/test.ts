@@ -5,10 +5,13 @@ import { writeJson } from "../orchestrator/artifacts";
 import { updateHandoff } from "../orchestrator/handoff";
 import {
   defaultAgentRunOptions,
+  errorOutput,
   readImplementorResultFile,
   readPlanFile,
   readRunHandoffFile,
   resolveRunDir,
+  successOutput,
+  toStepOutput,
 } from "./shared";
 
 interface TestOptions {
@@ -25,7 +28,16 @@ export const registerTestCommand = (program: Command) => {
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);
       if (runHandoff.next?.agent !== "tester") {
-        console.log("handoff.json does not point to tester as next agent.");
+        console.log(
+          JSON.stringify(
+            errorOutput(
+              "test",
+              "handoff.json does not point to tester as next agent."
+            ),
+            null,
+            2
+          )
+        );
         return;
       }
       const planFile = runHandoff.artifacts.plan ?? "plan.json";
@@ -72,7 +84,9 @@ export const registerTestCommand = (program: Command) => {
 
         await writeJson(`${runDir}/test.json`, skippedResult);
         await writeJson(`${runDir}/handoff.json`, updated);
-        console.log(JSON.stringify(skippedResult, null, 2));
+        console.log(
+          JSON.stringify(successOutput("test", skippedResult), null, 2)
+        );
         return;
       }
 
@@ -83,7 +97,7 @@ export const registerTestCommand = (program: Command) => {
       );
 
       if (!testResult.ok || !testResult.value) {
-        console.log(JSON.stringify(testResult, null, 2));
+        console.log(JSON.stringify(toStepOutput("test", testResult), null, 2));
         return;
       }
 
@@ -115,6 +129,8 @@ export const registerTestCommand = (program: Command) => {
       });
       await writeJson(`${runDir}/test.json`, testResult.value);
       await writeJson(`${runDir}/handoff.json`, updated);
-      console.log(JSON.stringify(testResult.value, null, 2));
+      console.log(
+        JSON.stringify(successOutput("test", testResult.value), null, 2)
+      );
     });
 };

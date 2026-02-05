@@ -28,6 +28,14 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   testFramework: "vitest",
 };
 
+const withStep = <T>(
+  result: OrchestratorResult<T>,
+  step: string
+): OrchestratorResult<T> => ({
+  ...result,
+  step,
+});
+
 const createTask = (description: string): OrchestratorTask => {
   return {
     task_id: Bun.randomUUIDv7(),
@@ -236,18 +244,21 @@ const runPlanner = async (
           codingStandardsRef: "AGENTS.md",
         },
       });
-      return { ok: true, value: plan };
+      return withStep({ ok: true, value: plan }, "plan");
     } catch (error) {
       if (attempts > config.maxPlanRetries) {
-        return {
-          ok: false,
-          error: error instanceof Error ? error.message : "Planner failed.",
-        };
+        return withStep(
+          {
+            ok: false,
+            error: error instanceof Error ? error.message : "Planner failed.",
+          },
+          "plan"
+        );
       }
     }
   }
 
-  return { ok: false, error: "Planner retries exhausted." };
+  return withStep({ ok: false, error: "Planner retries exhausted." }, "plan");
 };
 
 const runImplementor = async (
@@ -255,7 +266,10 @@ const runImplementor = async (
   config: OrchestratorConfig
 ): Promise<OrchestratorResult<ImplementorResult>> => {
   if (handoff.steps.length === 0) {
-    return { ok: false, error: "No steps available in handoff." };
+    return withStep(
+      { ok: false, error: "No steps available in handoff." },
+      "implement"
+    );
   }
 
   const injectedMap = new Map(
@@ -292,15 +306,21 @@ const runImplementor = async (
         break;
       }
       if (attempts > config.maxImplementorRetries) {
-        return {
-          ok: false,
-          error: result.blockedReason || "Implementor blocked.",
-        };
+        return withStep(
+          {
+            ok: false,
+            error: result.blockedReason || "Implementor blocked.",
+          },
+          "implement"
+        );
       }
     }
 
     if (!stepResult) {
-      return { ok: false, error: "Implementor retries exhausted." };
+      return withStep(
+        { ok: false, error: "Implementor retries exhausted." },
+        "implement"
+      );
     }
 
     results.push(stepResult);
@@ -311,7 +331,10 @@ const runImplementor = async (
       previousContent
     );
     if (!applied) {
-      return { ok: false, error: "Failed to apply diff for step." };
+      return withStep(
+        { ok: false, error: "Failed to apply diff for step." },
+        "implement"
+      );
     }
     if (applied.deleted) {
       injectedMap.delete(step.file);
@@ -325,17 +348,20 @@ const runImplementor = async (
     new Set(results.flatMap((result) => result.filesChanged))
   );
 
-  return {
-    ok: true,
-    value: {
-      status: "completed",
-      stepId: results[results.length - 1]?.stepId ?? "unknown",
-      diff: mergedDiff,
-      filesChanged,
-      blockedReason: "",
-      escalation: "",
+  return withStep(
+    {
+      ok: true,
+      value: {
+        status: "completed",
+        stepId: results[results.length - 1]?.stepId ?? "unknown",
+        diff: mergedDiff,
+        filesChanged,
+        blockedReason: "",
+        escalation: "",
+      },
     },
-  };
+    "implement"
+  );
 };
 
 const runReviewer = async (
@@ -357,7 +383,7 @@ const runReviewer = async (
 
   const reviewer = createReviewerAgent();
   const decision = await reviewer.review(reviewerInput);
-  return { ok: true, value: decision };
+  return withStep({ ok: true, value: decision }, "review");
 };
 
 const runTester = async (
@@ -376,7 +402,7 @@ const runTester = async (
 
   const tester = createTesterAgent();
   const result = await tester.test(testerInput);
-  return { ok: true, value: result };
+  return withStep({ ok: true, value: result }, "test");
 };
 
 const runFullPipeline = async (
@@ -458,8 +484,9 @@ const runFullPipeline = async (
     implementorHandoff.steps.length === 0
   ) {
     const error = "Planner did not provide executable steps or allowed files.";
-    await writeJson(`${context.run_dir}/implementor.error.json`, { error });
-    return { ok: false, error };
+    const errorResult = withStep({ ok: false, error }, "implement");
+    await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
+    return errorResult;
   }
 
   const implementResult = await runImplementor(
@@ -536,12 +563,15 @@ const runFullPipeline = async (
     next: reviewNext,
   });
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-  await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+  if (reviewNext.agent === "tester") {
+    await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+  }
 
   if (reviewResult.value.decision !== "approved") {
     return {
       ok: false,
       error: `Reviewer decision: ${reviewResult.value.decision}`,
+      step: "review",
     };
   }
 
@@ -612,7 +642,10 @@ const runFullPipeline = async (
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
 
   if (requiresTests && testResult.value?.status !== "passed") {
-    return { ok: false, error: `Tester status: ${testResult.value?.status}` };
+    return withStep(
+      { ok: false, error: `Tester status: ${testResult.value?.status}` },
+      "test"
+    );
   }
 
   await writeJson(`${context.run_dir}/pr-draft.json`, {
@@ -620,7 +653,7 @@ const runFullPipeline = async (
     status: "pending_human_approval",
   });
 
-  return { ok: true, value: testResult.value };
+  return withStep({ ok: true, value: testResult.value }, "complete");
 };
 
 export {

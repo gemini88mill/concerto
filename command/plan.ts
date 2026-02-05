@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { createRunContext, writeJson } from "../orchestrator/artifacts";
 import { createInitialHandoff, updateHandoff } from "../orchestrator/handoff";
 import { createTask, runPlanner } from "../orchestrator/state-machine";
-import { defaultAgentRunOptions } from "./shared";
+import { defaultAgentRunOptions, successOutput, toStepOutput } from "./shared";
 
 export const registerPlanCommand = (program: Command) => {
   program
@@ -16,7 +16,7 @@ export const registerPlanCommand = (program: Command) => {
 
       if (!planResult.ok || !planResult.value) {
         await writeJson(`${context.run_dir}/plan.error.json`, planResult);
-        console.log(JSON.stringify(planResult, null, 2));
+        console.log(JSON.stringify(toStepOutput("plan", planResult), null, 2));
         return;
       }
 
@@ -79,6 +79,8 @@ export const registerPlanCommand = (program: Command) => {
 
       await writeJson(`${context.run_dir}/handoff.json`, handoff);
       await writeJson(`${context.run_dir}/handoff.implementor.json`, handoff);
-      console.log(JSON.stringify(planResult.value, null, 2));
+      console.log(
+        JSON.stringify(successOutput("plan", planResult.value), null, 2)
+      );
     });
 };

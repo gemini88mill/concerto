@@ -152,4 +152,3 @@ const createTesterAgent = (
 };
 
 export { createTesterAgent, buildFailedResult };
-export { handleTesterResult };

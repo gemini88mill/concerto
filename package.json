@@ -8,10 +8,15 @@
   "private": true,
   "scripts": {
     "dev": "bun index.ts",
-    "build": "bun build index.ts --outdir dist --target node"
+    "build": "bun build index.ts --outdir dist --target node",
+    "lint": "bunx eslint . --max-warnings=0",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "eslint": "^9.9.0"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -19,7 +24,6 @@
   "dependencies": {
     "@openai/agents": "^0.4.5",
     "commander": "^14.0.3",
-    "openai": "^4.123.0",
     "zod": "^4.3.6"
   }
 }

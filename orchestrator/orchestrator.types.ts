@@ -14,6 +14,7 @@ interface OrchestratorResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  step?: string;
 }
 
 interface OrchestratorConfig {

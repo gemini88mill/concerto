@@ -7,10 +7,13 @@ import {
 import { writeJson } from "../orchestrator/artifacts";
 import { updateHandoff } from "../orchestrator/handoff";
 import {
+  errorOutput,
   readImplementorResultFile,
   readPlanFile,
   readRunHandoffFile,
   resolveRunDir,
+  successOutput,
+  toStepOutput,
 } from "./shared";
 
 interface ReviewOptions {
@@ -27,7 +30,16 @@ export const registerReviewCommand = (program: Command) => {
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);
       if (runHandoff.next?.agent !== "reviewer") {
-        console.log("handoff.json does not point to reviewer as next agent.");
+        console.log(
+          JSON.stringify(
+            errorOutput(
+              "review",
+              "handoff.json does not point to reviewer as next agent."
+            ),
+            null,
+            2
+          )
+        );
         return;
       }
       const planFile = runHandoff.artifacts.plan ?? "plan.json";
@@ -41,7 +53,7 @@ export const registerReviewCommand = (program: Command) => {
 
       const reviewResult = await runReviewer(handoff, implementorResult);
       if (!reviewResult.ok || !reviewResult.value) {
-        console.log(JSON.stringify(reviewResult, null, 2));
+        console.log(JSON.stringify(toStepOutput("review", reviewResult), null, 2));
         return;
       }
 
@@ -76,7 +88,11 @@ export const registerReviewCommand = (program: Command) => {
       });
       await writeJson(`${runDir}/review.json`, reviewResult.value);
       await writeJson(`${runDir}/handoff.json`, updated);
-      await writeJson(`${runDir}/handoff.test.json`, updated);
-      console.log(JSON.stringify(reviewResult.value, null, 2));
+      if (nextAgent.agent === "tester") {
+        await writeJson(`${runDir}/handoff.test.json`, updated);
+      }
+      console.log(
+        JSON.stringify(successOutput("review", reviewResult.value), null, 2)
+      );
     });
 };

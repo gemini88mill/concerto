@@ -55,6 +55,27 @@ const buildUserInput = (input: ReviewerInput) => {
   return JSON.stringify(input, null, 2);
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const normalizeReviewerOutput = (value: unknown): unknown => {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const decision = typeof value.decision === "string" ? value.decision : "";
+  if (decision !== "approved") {
+    return value;
+  }
+
+  return {
+    ...value,
+    reasons: [],
+    reason: "",
+    suggested_escalation: "",
+  };
+};
+
 const buildRejectedDecision = (
   taskId: string,
   reasons: string[]
@@ -174,7 +195,8 @@ const createReviewerAgent = (
       return buildRejectedDecision(taskId, ["Reviewer returned empty output."]);
     }
 
-    const parsed = validateReviewerOutput(JSON.parse(outputText));
+    const normalized = normalizeReviewerOutput(JSON.parse(outputText));
+    const parsed = validateReviewerOutput(normalized);
     if (!parsed.ok || !parsed.value) {
       return buildBlockedDecision(
         taskId,

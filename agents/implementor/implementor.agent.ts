@@ -1,5 +1,9 @@
 import OpenAI from "openai";
 import type {
+  ResponseFunctionToolCall,
+  ResponseInputItem,
+} from "openai/resources/responses/responses";
+import type {
   ImplementorAgent,
   ImplementorAgentOptions,
   ImplementorHandoff,
@@ -11,6 +15,7 @@ import {
   validateImplementorHandoff,
   validateImplementorResult,
 } from "./implementor.validators";
+import { executeTool, toolDefinitions } from "./implementor.tools";
 
 const DEFAULT_SYSTEM_PROMPT_PATH =
   "agents/implementor/implementor.system.md";
@@ -81,6 +86,55 @@ const createImplementorAgent = (
     apiKey: process.env.OPENAI_API_KEY,
   });
 
+  const runWithTools = async (
+    systemPrompt: string,
+    inputItems: ResponseInputItem[]
+  ) => {
+    let pendingInput: ResponseInputItem[] = inputItems;
+    let iterations = 0;
+
+    while (iterations < 8) {
+      iterations += 1;
+      const response = await openai.responses.create({
+        model,
+        instructions: systemPrompt,
+        input: pendingInput,
+        tools: toolDefinitions,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "ImplementorResult",
+            schema: RESULT_JSON_SCHEMA,
+            strict: true,
+          },
+        },
+      });
+
+      const toolCalls = response.output.filter(
+        (item): item is ResponseFunctionToolCall =>
+          item.type === "function_call"
+      );
+
+      if (toolCalls.length === 0) {
+        return response;
+      }
+
+      const toolOutputs: ResponseInputItem[] = [];
+      for (const call of toolCalls) {
+        const result = await executeTool(call.name, call.arguments);
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(result),
+        });
+      }
+
+      pendingInput = [...pendingInput, ...response.output, ...toolOutputs];
+    }
+
+    throw new Error("Tool loop exceeded max iterations.");
+  };
+
   const runStep = async (
     step: ImplementorStep,
     handoff: ImplementorHandoff
@@ -101,28 +155,16 @@ const createImplementorAgent = (
     const developerPrompt = await readPrompt(developerPromptPath);
     const userInput = buildUserInput(step, validated.value);
 
-    const response = await openai.responses.create({
-      model,
-      instructions: systemPrompt,
-      input: [
-        {
-          role: "developer",
-          content: developerPrompt,
-        },
-        {
-          role: "user",
-          content: userInput,
-        },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "ImplementorResult",
-          schema: RESULT_JSON_SCHEMA,
-          strict: true,
-        },
+    const response = await runWithTools(systemPrompt, [
+      {
+        role: "developer",
+        content: developerPrompt,
       },
-    });
+      {
+        role: "user",
+        content: userInput,
+      },
+    ]);
 
     const outputText = response.output_text;
     if (!outputText) {

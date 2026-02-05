@@ -33,7 +33,7 @@ const createRunContext = async (
   };
 };
 
-const getRunDirectories = async () => {
+const getRunDirectories = async (): Promise<string[]> => {
   try {
     const entries = await readdir(RUNS_ROOT, { withFileTypes: true });
     return entries
@@ -44,14 +44,19 @@ const getRunDirectories = async () => {
   }
 };
 
-const getLatestRunDir = async () => {
+const getLatestRunDir = async (): Promise<string | null> => {
   const runDirs = await getRunDirectories();
   if (runDirs.length === 0) {
     return null;
   }
 
-  let latestDir = runDirs[0];
-  let latestTime = (await stat(runDirs[0])).mtimeMs;
+  const [firstDir] = runDirs;
+  if (!firstDir) {
+    return null;
+  }
+
+  let latestDir = firstDir;
+  let latestTime = (await stat(firstDir)).mtimeMs;
 
   for (const runDir of runDirs.slice(1)) {
     const currentTime = (await stat(runDir)).mtimeMs;

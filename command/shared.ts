@@ -54,6 +54,13 @@ interface AgentRunOptions {
   testFramework: string;
 }
 
+interface StepOutput<T> {
+  step: string;
+  ok: boolean;
+  value?: T;
+  error?: string;
+}
+
 export const defaultAgentRunOptions: AgentRunOptions = {
   maxPlanRetries: 2,
   maxImplementorRetries: 1,
@@ -92,3 +99,25 @@ export const readRunHandoffFile = async (path: string): Promise<RunHandoff> => {
   }
   return raw;
 };
+
+export const toStepOutput = <T>(
+  step: string,
+  result: { ok: boolean; value?: T; error?: string }
+): StepOutput<T> => ({
+  step,
+  ok: result.ok,
+  value: result.value,
+  error: result.error,
+});
+
+export const successOutput = <T>(step: string, value: T): StepOutput<T> => ({
+  step,
+  ok: true,
+  value,
+});
+
+export const errorOutput = (step: string, error: string): StepOutput<never> => ({
+  step,
+  ok: false,
+  error,
+});

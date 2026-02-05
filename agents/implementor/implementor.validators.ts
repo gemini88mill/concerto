@@ -3,7 +3,6 @@ import type {
   DiffStats,
   ImplementorHandoff,
   ImplementorResult,
-  ImplementorStep,
   ValidationResult,
 } from "./implementor.types";
 
@@ -68,9 +67,7 @@ const validateImplementorHandoff = (
 ): ValidationResult<ImplementorHandoff> => {
   const parsed = handoffSchema.safeParse(input);
   if (!parsed.success) {
-    return buildErrorResult(
-      parsed.error.issues.map((issue) => issue.message)
-    );
+    return buildErrorResult(parsed.error.issues.map((issue) => issue.message));
   }
 
   const errors: string[] = [];
@@ -104,9 +101,7 @@ const validateImplementorResult = (
 ): ValidationResult<ImplementorResult> => {
   const parsed = resultSchema.safeParse(input);
   if (!parsed.success) {
-    return buildErrorResult(
-      parsed.error.issues.map((issue) => issue.message)
-    );
+    return buildErrorResult(parsed.error.issues.map((issue) => issue.message));
   }
 
   const result = parsed.data;
@@ -182,7 +177,7 @@ const enforceImplementorConstraints = (
     return buildErrorResult(["Implementor returned blocked status."]);
   }
 
-  if (!result.diff.startsWith("diff --git ")) {
+  if (!result.diff.trimStart().startsWith("diff --git ")) {
     return buildErrorResult(["Diff must be a unified diff."]);
   }
 
@@ -197,7 +192,9 @@ const enforceImplementorConstraints = (
     return buildErrorResult(["Diff exceeds max_files constraint."]);
   }
 
-  const invalidFiles = stats.filesChanged.filter((file) => !allowedSet.has(file));
+  const invalidFiles = stats.filesChanged.filter(
+    (file) => !allowedSet.has(file)
+  );
   if (invalidFiles.length > 0) {
     return buildErrorResult(["Diff includes files outside allowed_files."]);
   }

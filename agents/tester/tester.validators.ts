@@ -184,7 +184,7 @@ const validateImplementorOutput = (
     errors.push("Implementor result must be completed before testing.");
   }
 
-  if (!result.diff.startsWith("diff --git ")) {
+  if (!result.diff.trimStart().startsWith("diff --git ")) {
     errors.push("Implementor diff must be a unified diff.");
   }
 

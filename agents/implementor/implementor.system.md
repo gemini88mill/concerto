@@ -5,3 +5,4 @@ You must output JSON only, matching the required schema. Do not include markdown
 Return a unified diff in the "diff" field when status is "completed".
 Do not modify tests, add dependencies, or change architecture.
 If blocked, leave diff empty and explain the blocker in "blockedReason" with a clear escalation.
+You may use the provided tools to apply your diff, inspect git status, or run allowlisted commands.

@@ -96,7 +96,7 @@ const validateImplementorOutput = (
   const errors: string[] = [];
 
   if (result.status === "completed") {
-    if (!result.diff.startsWith("diff --git ")) {
+    if (!result.diff.trimStart().startsWith("diff --git ")) {
       errors.push("diff must be a unified diff when completed.");
     }
     if (result.filesChanged.length === 0) {

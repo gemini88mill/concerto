@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import { registerImplementCommand } from "./command/implement";
 import { registerPlanCommand } from "./command/plan";
-import { registerPrCommand } from "./command/pr";
 import { registerReviewCommand } from "./command/review";
 import { registerRunCommand } from "./command/run";
 import { registerTestCommand } from "./command/test";
