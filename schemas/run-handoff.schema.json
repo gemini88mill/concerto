@@ -87,7 +87,6 @@
         "review": { "type": "string" },
         "tests": { "type": "string" },
         "prDraft": { "type": "string" },
-        "implementorHandoff": { "type": "string" },
         "handoff": { "type": "string" },
         "handoffImplementor": { "type": "string" },
         "handoffReview": { "type": "string" },

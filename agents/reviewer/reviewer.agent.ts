@@ -176,7 +176,11 @@ const createReviewerAgent = (
 
     const parsed = validateReviewerOutput(JSON.parse(outputText));
     if (!parsed.ok || !parsed.value) {
-      return buildRejectedDecision(taskId, parsed.errors);
+      return buildBlockedDecision(
+        taskId,
+        `Reviewer output invalid: ${parsed.errors.join(" ")}`,
+        "rerun"
+      );
     }
 
     return parsed.value;

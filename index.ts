@@ -21,6 +21,6 @@ registerPlanCommand(program);
 registerImplementCommand(program);
 registerReviewCommand(program);
 registerTestCommand(program);
-registerPrCommand(program);
+// registerPrCommand(program);
 
 program.parse();

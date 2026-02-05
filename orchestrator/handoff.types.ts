@@ -50,7 +50,6 @@ interface HandoffArtifacts {
   review?: string;
   tests?: string;
   prDraft?: string;
-  implementorHandoff?: string;
   handoff?: string;
   handoffImplementor?: string;
   handoffReview?: string;

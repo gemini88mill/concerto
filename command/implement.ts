@@ -29,7 +29,6 @@ export const registerImplementCommand = (program: Command) => {
       const planPath = resolve(runDir, planFile);
       const plan = await readPlanFile(planPath);
       const implementorHandoff = await buildHandoffFromPlan(plan);
-      await writeJson(`${runDir}/implementor-handoff.json`, implementorHandoff);
 
       if (
         implementorHandoff.allowed_files.length === 0 ||

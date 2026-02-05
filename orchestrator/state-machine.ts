@@ -5,14 +5,21 @@ import type {
   ImplementorResult,
   ImplementorStep,
 } from "../agents/implementor/implementor.types";
-import type { ReviewerInput, ReviewerDecisionResult } from "../agents/reviewer/reviewer.types";
+import type {
+  ReviewerInput,
+  ReviewerDecisionResult,
+} from "../agents/reviewer/reviewer.types";
 import type { TesterInput, TesterResult } from "../agents/tester/tester.types";
 import { runImplementorStep } from "../agents/implementor/implementor.runner";
 import { createReviewerAgent } from "../agents/reviewer/reviewer.agent";
 import { createTesterAgent } from "../agents/tester/tester.agent";
 import { createRunContext, writeJson } from "./artifacts";
 import { createInitialHandoff, updateHandoff } from "./handoff";
-import type { OrchestratorConfig, OrchestratorResult, OrchestratorTask } from "./orchestrator.types";
+import type {
+  OrchestratorConfig,
+  OrchestratorResult,
+  OrchestratorTask,
+} from "./orchestrator.types";
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
   maxPlanRetries: 2,
@@ -22,9 +29,8 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
 };
 
 const createTask = (description: string): OrchestratorTask => {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return {
-    task_id: `TASK-${timestamp}`,
+    task_id: Bun.randomUUIDv7(),
     description,
     created_at: new Date().toISOString(),
   };
@@ -48,7 +54,142 @@ const buildInjectedFiles = async (allowedFiles: string[]) => {
   return injectedFiles;
 };
 
-const buildHandoffFromPlan = async (plan: Plan): Promise<ImplementorHandoff> => {
+interface DiffApplyResult {
+  content: string;
+  deleted: boolean;
+}
+
+interface DiffFileSection {
+  filePath: string;
+  lines: string[];
+}
+
+const splitDiffByFile = (diff: string): DiffFileSection[] => {
+  const sections: DiffFileSection[] = [];
+  let current: DiffFileSection | null = null;
+
+  const lines = diff.split("\n");
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      if (current) {
+        sections.push(current);
+      }
+      const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+      const filePath = match?.[2] ?? "";
+      current = { filePath, lines: [line] };
+      continue;
+    }
+    if (current) {
+      current.lines.push(line);
+    }
+  }
+
+  if (current) {
+    sections.push(current);
+  }
+
+  return sections;
+};
+
+const parseHunkHeader = (line: string) => {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (!match) {
+    return null;
+  }
+  return {
+    oldStart: Number(match[1]),
+    oldCount: match[2] ? Number(match[2]) : 1,
+    newStart: Number(match[3]),
+    newCount: match[4] ? Number(match[4]) : 1,
+  };
+};
+
+const applyUnifiedDiff = (
+  content: string,
+  diffLines: string[]
+): string | null => {
+  const sourceLines = content.split("\n");
+  const output: string[] = [];
+  let sourceIndex = 0;
+
+  let i = 0;
+  while (i < diffLines.length) {
+    const line = diffLines[i];
+    if (!line?.startsWith("@@")) {
+      i += 1;
+      continue;
+    }
+
+    const header = parseHunkHeader(line ?? "");
+    if (!header) {
+      return null;
+    }
+
+    const targetIndex = Math.max(0, header.oldStart - 1);
+    while (sourceIndex < targetIndex && sourceIndex < sourceLines.length) {
+      output.push(sourceLines[sourceIndex] ?? "");
+      sourceIndex += 1;
+    }
+
+    i += 1;
+    while (i < diffLines.length && !diffLines[i]?.startsWith("@@")) {
+      const hunkLine = diffLines[i];
+      if (hunkLine?.startsWith(" ")) {
+        output.push(hunkLine?.slice(1) ?? "");
+        sourceIndex += 1;
+      } else if (hunkLine?.startsWith("-")) {
+        sourceIndex += 1;
+      } else if (hunkLine?.startsWith("+")) {
+        output.push(hunkLine?.slice(1) ?? "");
+      } else if (
+        hunkLine?.startsWith("\\") &&
+        hunkLine?.includes("No newline")
+      ) {
+        // ignore
+      } else if (hunkLine?.startsWith("diff --git ")) {
+        break;
+      }
+      i += 1;
+    }
+  }
+
+  while (sourceIndex < sourceLines.length) {
+    output.push(sourceLines[sourceIndex] ?? "");
+    sourceIndex += 1;
+  }
+
+  return output.join("\n");
+};
+
+const applyDiffToContent = (
+  diff: string,
+  filePath: string,
+  content: string
+): DiffApplyResult | null => {
+  const sections = splitDiffByFile(diff);
+  const section = sections.find((item) => item.filePath === filePath);
+  if (!section) {
+    return { content, deleted: false };
+  }
+
+  const deleted = section.lines.some((line) =>
+    line.startsWith("deleted file mode")
+  );
+  if (deleted) {
+    return { content: "", deleted: true };
+  }
+
+  const updated = applyUnifiedDiff(content, section.lines);
+  if (updated === null) {
+    return null;
+  }
+
+  return { content: updated, deleted: false };
+};
+
+const buildHandoffFromPlan = async (
+  plan: Plan
+): Promise<ImplementorHandoff> => {
   const allowedFiles = plan.allowed_files;
   const steps: ImplementorStep[] = plan.steps;
   const injectedFiles = await buildInjectedFiles(allowedFiles);
@@ -113,24 +254,88 @@ const runImplementor = async (
   handoff: ImplementorHandoff,
   config: OrchestratorConfig
 ): Promise<OrchestratorResult<ImplementorResult>> => {
-  const step = handoff.steps[0];
-  if (!step) {
+  if (handoff.steps.length === 0) {
     return { ok: false, error: "No steps available in handoff." };
   }
 
-  let attempts = 0;
-  while (attempts <= config.maxImplementorRetries) {
-    attempts += 1;
-    const { result } = await runImplementorStep(step, { handoff });
-    if (result.status === "completed") {
-      return { ok: true, value: result };
+  const injectedMap = new Map(
+    handoff.injected_files.map((file) => [file.path, file.content])
+  );
+  const results: ImplementorResult[] = [];
+
+  for (const step of handoff.steps) {
+    if (step.action === "modify" && !injectedMap.has(step.file)) {
+      const file = Bun.file(step.file);
+      if (await file.exists()) {
+        injectedMap.set(step.file, await file.text());
+      }
     }
-    if (attempts > config.maxImplementorRetries) {
-      return { ok: false, error: result.blockedReason || "Implementor blocked." };
+
+    const stepHandoff: ImplementorHandoff = {
+      ...handoff,
+      steps: [step],
+      injected_files: Array.from(injectedMap.entries()).map(
+        ([path, content]) => ({ path, content })
+      ),
+    };
+
+    let attempts = 0;
+    let stepResult: ImplementorResult | null = null;
+
+    while (attempts <= config.maxImplementorRetries) {
+      attempts += 1;
+      const { result } = await runImplementorStep(step, {
+        handoff: stepHandoff,
+      });
+      if (result.status === "completed") {
+        stepResult = result;
+        break;
+      }
+      if (attempts > config.maxImplementorRetries) {
+        return {
+          ok: false,
+          error: result.blockedReason || "Implementor blocked.",
+        };
+      }
+    }
+
+    if (!stepResult) {
+      return { ok: false, error: "Implementor retries exhausted." };
+    }
+
+    results.push(stepResult);
+    const previousContent = injectedMap.get(step.file) ?? "";
+    const applied = applyDiffToContent(
+      stepResult.diff,
+      step.file,
+      previousContent
+    );
+    if (!applied) {
+      return { ok: false, error: "Failed to apply diff for step." };
+    }
+    if (applied.deleted) {
+      injectedMap.delete(step.file);
+    } else {
+      injectedMap.set(step.file, applied.content);
     }
   }
 
-  return { ok: false, error: "Implementor retries exhausted." };
+  const mergedDiff = results.map((result) => result.diff).join("\n");
+  const filesChanged = Array.from(
+    new Set(results.flatMap((result) => result.filesChanged))
+  );
+
+  return {
+    ok: true,
+    value: {
+      status: "completed",
+      stepId: results[results.length - 1]?.stepId ?? "unknown",
+      diff: mergedDiff,
+      filesChanged,
+      blockedReason: "",
+      escalation: "",
+    },
+  };
 };
 
 const runReviewer = async (
@@ -174,7 +379,10 @@ const runTester = async (
   return { ok: true, value: result };
 };
 
-const runFullPipeline = async (description: string, config?: Partial<OrchestratorConfig>) => {
+const runFullPipeline = async (
+  description: string,
+  config?: Partial<OrchestratorConfig>
+) => {
   const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
   const task = createTask(description);
   const context = await createRunContext(task);
@@ -186,7 +394,9 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   }
   await writeJson(`${context.run_dir}/plan.json`, planResult.value);
 
-  const requiresTests = planResult.value.tasks.some((task) => task.requiresTests);
+  const requiresTests = planResult.value.tasks.some(
+    (task) => task.requiresTests
+  );
   const baseHandoff = createInitialHandoff({
     run: {
       id: context.run_id,
@@ -209,7 +419,6 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
       review: "review.json",
       tests: "test.json",
       prDraft: "pr-draft.json",
-      implementorHandoff: "implementor-handoff.json",
       handoff: "handoff.json",
       handoffImplementor: "handoff.implementor.json",
       handoffReview: "handoff.review.json",
@@ -243,7 +452,6 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
 
   const implementorHandoff = await buildHandoffFromPlan(planResult.value);
-  await writeJson(`${context.run_dir}/implementor-handoff.json`, implementorHandoff);
 
   if (
     implementorHandoff.allowed_files.length === 0 ||
@@ -254,9 +462,15 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
     return { ok: false, error };
   }
 
-  const implementResult = await runImplementor(implementorHandoff, resolvedConfig);
+  const implementResult = await runImplementor(
+    implementorHandoff,
+    resolvedConfig
+  );
   if (!implementResult.ok || !implementResult.value) {
-    await writeJson(`${context.run_dir}/implementor.error.json`, implementResult);
+    await writeJson(
+      `${context.run_dir}/implementor.error.json`,
+      implementResult
+    );
     return implementResult;
   }
   await writeJson(`${context.run_dir}/implementor.json`, implementResult.value);
@@ -282,7 +496,10 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
   await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
 
-  const reviewResult = await runReviewer(implementorHandoff, implementResult.value);
+  const reviewResult = await runReviewer(
+    implementorHandoff,
+    implementResult.value
+  );
   if (!reviewResult.ok || !reviewResult.value) {
     await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
     return reviewResult;
@@ -302,7 +519,9 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
     : {
         agent: "implementer",
         inputArtifacts: ["plan.json", "implementor.json", "review.json"],
-        instructions: ["Address review feedback and update the implementation."],
+        instructions: [
+          "Address review feedback and update the implementation.",
+        ],
       };
 
   runHandoff = updateHandoff({
@@ -320,32 +539,62 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
 
   if (reviewResult.value.decision !== "approved") {
-    return { ok: false, error: `Reviewer decision: ${reviewResult.value.decision}` };
+    return {
+      ok: false,
+      error: `Reviewer decision: ${reviewResult.value.decision}`,
+    };
   }
 
-  const testResult = await runTester(
-    implementorHandoff,
-    implementResult.value,
-    resolvedConfig
-  );
-  if (!testResult.ok || !testResult.value) {
+  if (!requiresTests) {
+    const skippedResult = {
+      task_id: implementorHandoff.task.id,
+      status: "passed",
+      tests_added: [],
+      test_summary: "Tests not required for this run.",
+      coverage_notes: [],
+      reason: "Tests skipped by policy.",
+      logs: "",
+    };
+    await writeJson(`${context.run_dir}/test.json`, skippedResult);
+  }
+
+  const testResult = requiresTests
+    ? await runTester(implementorHandoff, implementResult.value, resolvedConfig)
+    : { ok: true, value: null };
+
+  if (requiresTests && (!testResult.ok || !testResult.value)) {
     await writeJson(`${context.run_dir}/test.error.json`, testResult);
     return testResult;
   }
-  await writeJson(`${context.run_dir}/test.json`, testResult.value);
 
-  const testsPassed = testResult.value.status === "passed";
+  if (requiresTests && testResult.value) {
+    await writeJson(`${context.run_dir}/test.json`, testResult.value);
+  }
+
+  const testsPassed = requiresTests
+    ? testResult.value?.status === "passed"
+    : true;
   const testNext = testsPassed
     ? {
         agent: "pr",
-        inputArtifacts: ["plan.json", "implementor.json", "review.json", "test.json"],
+        inputArtifacts: [
+          "plan.json",
+          "implementor.json",
+          "review.json",
+          "test.json",
+        ],
         instructions: [
           "Prepare a PR draft based on the approved implementation and tests.",
         ],
       }
     : {
         agent: "implementer",
-        inputArtifacts: ["plan.json", "implementor.json", "review.json", "test.json"],
+        inputArtifacts: [
+          "plan.json",
+          "implementor.json",
+          "review.json",
+          "test.json",
+        ],
         instructions: ["Fix implementation issues that caused test failures."],
       };
 
@@ -362,8 +611,8 @@ const runFullPipeline = async (description: string, config?: Partial<Orchestrato
   });
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
 
-  if (testResult.value.status !== "passed") {
-    return { ok: false, error: `Tester status: ${testResult.value.status}` };
+  if (requiresTests && testResult.value?.status !== "passed") {
+    return { ok: false, error: `Tester status: ${testResult.value?.status}` };
   }
 
   await writeJson(`${context.run_dir}/pr-draft.json`, {

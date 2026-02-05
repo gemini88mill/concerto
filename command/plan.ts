@@ -48,7 +48,6 @@ export const registerPlanCommand = (program: Command) => {
           review: "review.json",
           tests: "test.json",
           prDraft: "pr-draft.json",
-          implementorHandoff: "implementor-handoff.json",
           handoff: "handoff.json",
           handoffImplementor: "handoff.implementor.json",
           handoffReview: "handoff.review.json",

@@ -37,6 +37,45 @@ export const registerTestCommand = (program: Command) => {
       const implementorResult = await readImplementorResultFile(implementorPath);
       const handoff = await buildHandoffFromPlan(plan);
 
+      const testsRequired =
+        runHandoff.constraints?.requireTestsForBehaviorChange ?? true;
+      if (!testsRequired) {
+        const skippedResult = {
+          task_id: runHandoff.task.id,
+          status: "passed",
+          tests_added: [],
+          test_summary: "Tests not required for this run.",
+          coverage_notes: [],
+          reason: "Tests skipped by policy.",
+          logs: "",
+        };
+
+        const nextAgent = {
+          agent: "pr",
+          inputArtifacts: [planFile, implementorFile, "review.json", "test.json"],
+          instructions: [
+            "Prepare a PR draft based on the approved implementation and tests.",
+          ],
+        };
+
+        const updated = updateHandoff({
+          handoff: runHandoff,
+          phase: "test",
+          status: "completed",
+          artifact: "test.json",
+          endedAt: new Date().toISOString(),
+          artifacts: {
+            tests: "test.json",
+          },
+          next: nextAgent,
+        });
+
+        await writeJson(`${runDir}/test.json`, skippedResult);
+        await writeJson(`${runDir}/handoff.json`, updated);
+        console.log(JSON.stringify(skippedResult, null, 2));
+        return;
+      }
+
       const testResult = await runTester(
         handoff,
         implementorResult,
