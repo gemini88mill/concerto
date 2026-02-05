@@ -12,6 +12,7 @@ import {
   readPlanFile,
   readRunHandoffFile,
   resolveRunDir,
+  stepStartOutput,
   successOutput,
   toStepOutput,
 } from "./shared";
@@ -26,6 +27,7 @@ export const registerReviewCommand = (program: Command) => {
     .description("Run S3 only.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: ReviewOptions) => {
+      console.log(JSON.stringify(stepStartOutput("review"), null, 2));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);
@@ -49,7 +51,15 @@ export const registerReviewCommand = (program: Command) => {
       const implementorPath = resolve(runDir, implementorFile);
       const plan = await readPlanFile(planPath);
       const implementorResult = await readImplementorResultFile(implementorPath);
-      const handoff = await buildHandoffFromPlan(plan);
+      let handoff;
+      try {
+        handoff = await buildHandoffFromPlan(plan);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Invalid plan files.";
+        console.log(JSON.stringify(errorOutput("review", message), null, 2));
+        return;
+      }
 
       const reviewResult = await runReviewer(handoff, implementorResult);
       if (!reviewResult.ok || !reviewResult.value) {

@@ -50,6 +50,7 @@ const implementorResultSchema = z.object({
 interface AgentRunOptions {
   maxPlanRetries: number;
   maxImplementorRetries: number;
+  maxReviewRetries: number;
   testCommand: string;
   testFramework: string;
 }
@@ -59,11 +60,22 @@ interface StepOutput<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  diagnostic?: {
+    stepId?: string;
+    file?: string;
+    diff?: string;
+  };
+}
+
+interface StepStartOutput {
+  step: string;
+  status: "started";
 }
 
 export const defaultAgentRunOptions: AgentRunOptions = {
   maxPlanRetries: 2,
-  maxImplementorRetries: 1,
+  maxImplementorRetries: 3,
+  maxReviewRetries: 3,
   testCommand: "bunx vitest",
   testFramework: "vitest",
 };
@@ -102,12 +114,22 @@ export const readRunHandoffFile = async (path: string): Promise<RunHandoff> => {
 
 export const toStepOutput = <T>(
   step: string,
-  result: { ok: boolean; value?: T; error?: string }
+  result: {
+    ok: boolean;
+    value?: T;
+    error?: string;
+    diagnostic?: {
+      stepId?: string;
+      file?: string;
+      diff?: string;
+    };
+  }
 ): StepOutput<T> => ({
   step,
   ok: result.ok,
   value: result.value,
   error: result.error,
+  diagnostic: result.diagnostic,
 });
 
 export const successOutput = <T>(step: string, value: T): StepOutput<T> => ({
@@ -120,4 +142,9 @@ export const errorOutput = (step: string, error: string): StepOutput<never> => (
   step,
   ok: false,
   error,
+});
+
+export const stepStartOutput = (step: string): StepStartOutput => ({
+  step,
+  status: "started",
 });

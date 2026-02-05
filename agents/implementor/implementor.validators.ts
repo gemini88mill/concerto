@@ -169,6 +169,23 @@ const parseUnifiedDiff = (diff: string): DiffStats => {
   };
 };
 
+const hasValidHunkHeaders = (diff: string): boolean => {
+  const lines = diff.split("\n");
+  let sawHunk = false;
+
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      sawHunk = true;
+      const match = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(line);
+      if (!match) {
+        return false;
+      }
+    }
+  }
+
+  return sawHunk;
+};
+
 const enforceImplementorConstraints = (
   result: ImplementorResult,
   handoff: ImplementorHandoff
@@ -179,6 +196,11 @@ const enforceImplementorConstraints = (
 
   if (!result.diff.trimStart().startsWith("diff --git ")) {
     return buildErrorResult(["Diff must be a unified diff."]);
+  }
+  if (!hasValidHunkHeaders(result.diff)) {
+    return buildErrorResult([
+      "Diff must include valid unified diff hunk headers (e.g., '@@ -1,3 +1,4 @@').",
+    ]);
   }
 
   const stats = parseUnifiedDiff(result.diff);

@@ -17,23 +17,27 @@ import { createRunContext, writeJson } from "./artifacts";
 import { createInitialHandoff, updateHandoff } from "./handoff";
 import type {
   OrchestratorConfig,
+  OrchestratorDiagnostic,
   OrchestratorResult,
   OrchestratorTask,
 } from "./orchestrator.types";
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
   maxPlanRetries: 2,
-  maxImplementorRetries: 1,
+  maxImplementorRetries: 3,
+  maxReviewRetries: 3,
   testCommand: "bunx vitest",
   testFramework: "vitest",
 };
 
 const withStep = <T>(
   result: OrchestratorResult<T>,
-  step: string
+  step: string,
+  diagnostic?: OrchestratorDiagnostic
 ): OrchestratorResult<T> => ({
   ...result,
   step,
+  diagnostic,
 });
 
 const createTask = (description: string): OrchestratorTask => {
@@ -71,6 +75,68 @@ interface DiffFileSection {
   filePath: string;
   lines: string[];
 }
+
+interface ResolvedPlanFiles {
+  allowedFiles: string[];
+  steps: ImplementorStep[];
+  errors: string[];
+}
+
+const isGlobPattern = (value: string) => /[*?\[]/.test(value);
+
+const expandPattern = async (pattern: string): Promise<string[]> => {
+  const glob = new Bun.Glob(pattern);
+  const matches: string[] = [];
+  for await (const match of glob.scan({ cwd: "." })) {
+    matches.push(match);
+  }
+  return matches;
+};
+
+const resolvePlanFiles = async (plan: Plan): Promise<ResolvedPlanFiles> => {
+  const allowedFilesSet = new Set<string>();
+  const errors: string[] = [];
+
+  for (const entry of plan.allowed_files) {
+    if (isGlobPattern(entry)) {
+      const matches = await expandPattern(entry);
+      if (matches.length === 0) {
+        errors.push(`allowed_files pattern "${entry}" matched no files.`);
+      } else {
+        matches.forEach((match) => allowedFilesSet.add(match));
+      }
+    } else {
+      allowedFilesSet.add(entry);
+    }
+  }
+
+  const steps: ImplementorStep[] = [];
+  for (const step of plan.steps) {
+    if (isGlobPattern(step.file)) {
+      const matches = await expandPattern(step.file);
+      if (matches.length === 0) {
+        errors.push(`Step ${step.id} pattern "${step.file}" matched no files.`);
+      } else {
+        matches.forEach((match, index) => {
+          steps.push({
+            ...step,
+            id: `${step.id}-${index + 1}`,
+            file: match,
+            description: `${step.description} (target: ${match})`,
+          });
+        });
+      }
+    } else {
+      steps.push(step);
+    }
+  }
+
+  return {
+    allowedFiles: Array.from(allowedFilesSet),
+    steps,
+    errors,
+  };
+};
 
 const splitDiffByFile = (diff: string): DiffFileSection[] => {
   const sections: DiffFileSection[] = [];
@@ -198,8 +264,13 @@ const applyDiffToContent = (
 const buildHandoffFromPlan = async (
   plan: Plan
 ): Promise<ImplementorHandoff> => {
-  const allowedFiles = plan.allowed_files;
-  const steps: ImplementorStep[] = plan.steps;
+  const resolved = await resolvePlanFiles(plan);
+  if (resolved.errors.length > 0) {
+    throw new Error(resolved.errors.join(" "));
+  }
+
+  const allowedFiles = resolved.allowedFiles;
+  const steps: ImplementorStep[] = resolved.steps;
   const injectedFiles = await buildInjectedFiles(allowedFiles);
   const maxFiles = Math.max(1, Math.min(allowedFiles.length, 3));
 
@@ -295,8 +366,9 @@ const runImplementor = async (
 
     let attempts = 0;
     let stepResult: ImplementorResult | null = null;
+    let lastBlockedReason = "";
 
-    while (attempts <= config.maxImplementorRetries) {
+    while (attempts < config.maxImplementorRetries) {
       attempts += 1;
       const { result } = await runImplementorStep(step, {
         handoff: stepHandoff,
@@ -305,20 +377,15 @@ const runImplementor = async (
         stepResult = result;
         break;
       }
-      if (attempts > config.maxImplementorRetries) {
-        return withStep(
-          {
-            ok: false,
-            error: result.blockedReason || "Implementor blocked.",
-          },
-          "implement"
-        );
-      }
+      lastBlockedReason = result.blockedReason;
     }
 
     if (!stepResult) {
       return withStep(
-        { ok: false, error: "Implementor retries exhausted." },
+        {
+          ok: false,
+          error: `Implementor retries exhausted. ${lastBlockedReason || "No reason provided."}`,
+        },
         "implement"
       );
     }
@@ -333,7 +400,12 @@ const runImplementor = async (
     if (!applied) {
       return withStep(
         { ok: false, error: "Failed to apply diff for step." },
-        "implement"
+        "implement",
+        {
+          stepId: stepResult.stepId,
+          file: step.file,
+          diff: stepResult.diff,
+        }
       );
     }
     if (applied.deleted) {
@@ -412,7 +484,9 @@ const runFullPipeline = async (
   const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
   const task = createTask(description);
   const context = await createRunContext(task);
+  let failedDiffIndex = 0;
 
+  console.log(JSON.stringify({ step: "plan", status: "started" }, null, 2));
   const planResult = await runPlanner(description, resolvedConfig);
   if (!planResult.ok || !planResult.value) {
     await writeJson(`${context.run_dir}/plan.error.json`, planResult);
@@ -477,7 +551,16 @@ const runFullPipeline = async (
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
   await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
 
-  const implementorHandoff = await buildHandoffFromPlan(planResult.value);
+  console.log(JSON.stringify({ step: "implement", status: "started" }, null, 2));
+  let implementorHandoff: ImplementorHandoff;
+  try {
+    implementorHandoff = await buildHandoffFromPlan(planResult.value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid plan files.";
+    const errorResult = withStep({ ok: false, error: message }, "implement");
+    await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
+    return errorResult;
+  }
 
   if (
     implementorHandoff.allowed_files.length === 0 ||
@@ -489,52 +572,66 @@ const runFullPipeline = async (
     return errorResult;
   }
 
-  const implementResult = await runImplementor(
-    implementorHandoff,
-    resolvedConfig
-  );
-  if (!implementResult.ok || !implementResult.value) {
-    await writeJson(
-      `${context.run_dir}/implementor.error.json`,
-      implementResult
+  let implementResult: OrchestratorResult<ImplementorResult> | null = null;
+  let reviewResult: OrchestratorResult<ReviewerDecisionResult> | null = null;
+  let rejectionReason = "";
+
+  for (let attempt = 1; attempt <= resolvedConfig.maxReviewRetries; attempt += 1) {
+    implementResult = await runImplementor(
+      implementorHandoff,
+      resolvedConfig
     );
-    return implementResult;
-  }
-  await writeJson(`${context.run_dir}/implementor.json`, implementResult.value);
+    if (!implementResult.ok || !implementResult.value) {
+      if (implementResult.diagnostic?.diff) {
+        failedDiffIndex += 1;
+        await writeJson(`${context.run_dir}/implementor.failed.${failedDiffIndex}.json`, {
+          step: implementResult.step ?? "implement",
+          error: implementResult.error ?? "Implementor failed.",
+          diagnostic: implementResult.diagnostic,
+        });
+      }
+      await writeJson(
+        `${context.run_dir}/implementor.error.json`,
+        implementResult
+      );
+      return implementResult;
+    }
+    await writeJson(`${context.run_dir}/implementor.json`, implementResult.value);
 
-  runHandoff = updateHandoff({
-    handoff: runHandoff,
-    phase: "implement",
-    status: "completed",
-    artifact: "implementor.json",
-    endedAt: new Date().toISOString(),
-    artifacts: {
-      implementation: "implementor.json",
-    },
-    next: {
-      agent: "reviewer",
-      inputArtifacts: ["plan.json", "implementor.json"],
-      instructions: [
-        "Review the implementation against the plan and project guidelines.",
-        "If rejecting, provide actionable fixes only; do not implement.",
-      ],
-    },
-  });
-  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-  await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
+    runHandoff = updateHandoff({
+      handoff: runHandoff,
+      phase: "implement",
+      status: "completed",
+      artifact: "implementor.json",
+      endedAt: new Date().toISOString(),
+      artifacts: {
+        implementation: "implementor.json",
+      },
+      next: {
+        agent: "reviewer",
+        inputArtifacts: ["plan.json", "implementor.json"],
+        instructions: [
+          "Review the implementation against the plan and project guidelines.",
+          "If rejecting, provide actionable fixes only; do not implement.",
+        ],
+      },
+    });
+    await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+    await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
 
-  const reviewResult = await runReviewer(
-    implementorHandoff,
-    implementResult.value
-  );
-  if (!reviewResult.ok || !reviewResult.value) {
-    await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
-    return reviewResult;
-  }
-  await writeJson(`${context.run_dir}/review.json`, reviewResult.value);
+    console.log(JSON.stringify({ step: "review", status: "started" }, null, 2));
+    reviewResult = await runReviewer(
+      implementorHandoff,
+      implementResult.value
+    );
+    if (!reviewResult.ok || !reviewResult.value) {
+      await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
+      return reviewResult;
+    }
+    await writeJson(`${context.run_dir}/review.json`, reviewResult.value);
 
-  const reviewApproved = reviewResult.value.decision === "approved";
-  const reviewNext = reviewApproved
+    const reviewApproved = reviewResult.value.decision === "approved";
+    const reviewNext = reviewApproved
     ? {
         agent: "tester",
         inputArtifacts: ["plan.json", "implementor.json", "review.json"],
@@ -551,26 +648,58 @@ const runFullPipeline = async (
         ],
       };
 
-  runHandoff = updateHandoff({
-    handoff: runHandoff,
-    phase: "review",
-    status: "completed",
-    artifact: "review.json",
-    endedAt: new Date().toISOString(),
-    artifacts: {
-      review: "review.json",
-    },
-    next: reviewNext,
-  });
-  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-  if (reviewNext.agent === "tester") {
-    await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
-  }
+    runHandoff = updateHandoff({
+      handoff: runHandoff,
+      phase: "review",
+      status: "completed",
+      artifact: "review.json",
+      endedAt: new Date().toISOString(),
+      artifacts: {
+        review: "review.json",
+      },
+      next: reviewNext,
+    });
+    await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+    if (reviewNext.agent === "tester") {
+      await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+    }
 
-  if (reviewResult.value.decision !== "approved") {
+    if (reviewResult.value.decision === "approved") {
+      break;
+    }
+
+    if (reviewResult.value.decision === "blocked") {
+      return {
+        ok: false,
+        error: `Reviewer blocked: ${reviewResult.value.reason}`,
+        step: "review",
+      };
+    }
+
+    rejectionReason = reviewResult.value.reasons.join(" ");
+    if (attempt < resolvedConfig.maxReviewRetries) {
+      console.log(
+        JSON.stringify({ step: "implement", status: "started" }, null, 2)
+      );
+      continue;
+    }
+
     return {
       ok: false,
-      error: `Reviewer decision: ${reviewResult.value.decision}`,
+      error: `Reviewer rejected: ${rejectionReason || "No reason provided."}`,
+      step: "review",
+    };
+  }
+
+  if (
+    !implementResult ||
+    !implementResult.value ||
+    !reviewResult ||
+    !reviewResult.value
+  ) {
+    return {
+      ok: false,
+      error: "Implementation or review missing.",
       step: "review",
     };
   }
@@ -588,6 +717,7 @@ const runFullPipeline = async (
     await writeJson(`${context.run_dir}/test.json`, skippedResult);
   }
 
+  console.log(JSON.stringify({ step: "test", status: "started" }, null, 2));
   const testResult = requiresTests
     ? await runTester(implementorHandoff, implementResult.value, resolvedConfig)
     : { ok: true, value: null };

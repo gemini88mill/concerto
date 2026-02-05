@@ -15,17 +15,26 @@ interface OrchestratorResult<T> {
   value?: T;
   error?: string;
   step?: string;
+  diagnostic?: OrchestratorDiagnostic;
+}
+
+interface OrchestratorDiagnostic {
+  stepId?: string;
+  file?: string;
+  diff?: string;
 }
 
 interface OrchestratorConfig {
   maxPlanRetries: number;
   maxImplementorRetries: number;
+  maxReviewRetries: number;
   testCommand: string;
   testFramework: string;
 }
 
 export type {
   OrchestratorConfig,
+  OrchestratorDiagnostic,
   OrchestratorResult,
   OrchestratorRunContext,
   OrchestratorTask,

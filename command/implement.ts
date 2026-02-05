@@ -12,6 +12,7 @@ import {
   readPlanFile,
   readRunHandoffFile,
   resolveRunDir,
+  stepStartOutput,
   successOutput,
   toStepOutput,
 } from "./shared";
@@ -26,6 +27,7 @@ export const registerImplementCommand = (program: Command) => {
     .description("Run S2 only.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: ImplementOptions) => {
+      console.log(JSON.stringify(stepStartOutput("implement"), null, 2));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);
@@ -45,7 +47,15 @@ export const registerImplementCommand = (program: Command) => {
       const planFile = runHandoff.artifacts.plan ?? "plan.json";
       const planPath = resolve(runDir, planFile);
       const plan = await readPlanFile(planPath);
-      const implementorHandoff = await buildHandoffFromPlan(plan);
+      let implementorHandoff;
+      try {
+        implementorHandoff = await buildHandoffFromPlan(plan);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Invalid plan files.";
+        console.log(JSON.stringify(errorOutput("implement", message), null, 2));
+        return;
+      }
 
       if (
         implementorHandoff.allowed_files.length === 0 ||
@@ -70,6 +80,13 @@ export const registerImplementCommand = (program: Command) => {
       );
 
       if (!result.ok || !result.value) {
+        if (result.diagnostic?.diff) {
+          await writeJson(`${runDir}/implementor.failed.1.json`, {
+            step: "implement",
+            error: result.error ?? "Implementor failed.",
+            diagnostic: result.diagnostic,
+          });
+        }
         console.log(JSON.stringify(toStepOutput("implement", result), null, 2));
         return;
       }
