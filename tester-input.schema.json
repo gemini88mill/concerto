@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TesterInput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "handoff",
+    "implementor_result",
+    "project_test_rules",
+    "test_framework",
+    "test_command"
+  ],
+  "properties": {
+    "handoff": { "$ref": "./implementor-handoff.schema.json" },
+    "implementor_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "stepId",
+        "diff",
+        "filesChanged",
+        "blockedReason",
+        "escalation"
+      ],
+      "properties": {
+        "status": { "type": "string", "enum": ["completed", "blocked"] },
+        "stepId": { "type": "string" },
+        "diff": { "type": "string" },
+        "filesChanged": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "blockedReason": { "type": "string" },
+        "escalation": { "type": "string" }
+      }
+    },
+    "project_test_rules": { "type": "string" },
+    "test_framework": { "type": "string" },
+    "test_command": { "type": "string" }
+  }
+}

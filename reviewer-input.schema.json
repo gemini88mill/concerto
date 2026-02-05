@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewerInput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "handoff",
+    "implementor_result",
+    "project_rules",
+    "reviewer_constraints"
+  ],
+  "properties": {
+    "handoff": { "$ref": "./implementor-handoff.schema.json" },
+    "implementor_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "stepId",
+        "diff",
+        "filesChanged",
+        "blockedReason",
+        "escalation"
+      ],
+      "properties": {
+        "status": { "type": "string", "enum": ["completed", "blocked"] },
+        "stepId": { "type": "string" },
+        "diff": { "type": "string" },
+        "filesChanged": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "blockedReason": { "type": "string" },
+        "escalation": { "type": "string" }
+      }
+    },
+    "project_rules": { "type": "string" },
+    "reviewer_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enforceAllowedFiles",
+        "enforceNoTests",
+        "enforceNoNewDependencies",
+        "enforceNoArchitectureChanges"
+      ],
+      "properties": {
+        "enforceAllowedFiles": { "type": "boolean" },
+        "enforceNoTests": { "type": "boolean" },
+        "enforceNoNewDependencies": { "type": "boolean" },
+        "enforceNoArchitectureChanges": { "type": "boolean" }
+      }
+    }
+  }
+}

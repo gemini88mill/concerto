@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ImplementorHandoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "handoff_version",
+    "task",
+    "allowed_files",
+    "constraints",
+    "steps",
+    "injected_files"
+  ],
+  "properties": {
+    "handoff_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary", "change_type"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "change_type": { "type": "string" }
+      }
+    },
+    "allowed_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_files",
+        "max_diff_lines",
+        "max_diff_bytes",
+        "no_new_dependencies",
+        "no_tests",
+        "no_architecture_changes"
+      ],
+      "properties": {
+        "max_files": { "type": "integer", "minimum": 1 },
+        "max_diff_lines": { "type": "integer", "minimum": 1 },
+        "max_diff_bytes": { "type": "integer", "minimum": 1 },
+        "no_new_dependencies": { "type": "boolean" },
+        "no_tests": { "type": "boolean" },
+        "no_architecture_changes": { "type": "boolean" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "file", "action", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "file": { "type": "string" },
+          "action": { "type": "string", "enum": ["modify", "create", "delete"] },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "injected_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      }
+    }
+  }
+}

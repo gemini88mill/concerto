@@ -1,0 +1,25 @@
+{
+  "name": "concerto",
+  "module": "index.ts",
+  "type": "module",
+  "version": "0.0.1",
+  "description": "CLI for orchestrator runs and artifacts.",
+  "author": "Raphael Miller",
+  "private": true,
+  "scripts": {
+    "dev": "bun index.ts",
+    "build": "bun build index.ts --outdir dist --target node"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.4.5",
+    "commander": "^14.0.3",
+    "openai": "^4.123.0",
+    "zod": "^4.3.6"
+  }
+}
