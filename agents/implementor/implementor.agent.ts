@@ -26,6 +26,7 @@ const RESULT_JSON_SCHEMA: Record<string, unknown> = {
     "stepId",
     "diff",
     "filesChanged",
+    "proposed_actions",
     "blockedReason",
     "escalation",
   ],
@@ -36,6 +37,19 @@ const RESULT_JSON_SCHEMA: Record<string, unknown> = {
     filesChanged: {
       type: "array",
       items: { type: "string" },
+    },
+    proposed_actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "path", "content"],
+        properties: {
+          type: { type: "string", enum: ["write_file", "delete_file"] },
+          path: { type: "string" },
+          content: { type: "string" },
+        },
+      },
     },
     blockedReason: { type: "string" },
     escalation: { type: "string" },
@@ -115,6 +129,7 @@ const createImplementorAgent = (
         stepId: step.id,
         diff: "",
         filesChanged: [],
+        proposed_actions: [],
         blockedReason: validated.errors.join(" "),
         escalation: "Validate handoff input and retry.",
       };
@@ -142,6 +157,7 @@ const createImplementorAgent = (
         stepId: step.id,
         diff: "",
         filesChanged: [],
+        proposed_actions: [],
         blockedReason: "Implementor returned empty output.",
         escalation: "Check model output and retry.",
       };
@@ -160,6 +176,7 @@ const createImplementorAgent = (
         stepId: step.id,
         diff: "",
         filesChanged: [],
+        proposed_actions: [],
         blockedReason: "Implementor returned invalid JSON output.",
         escalation: "Fix implementor output format and retry.",
       };
@@ -178,6 +195,7 @@ const createImplementorAgent = (
         stepId: step.id,
         diff: "",
         filesChanged: [],
+        proposed_actions: [],
         blockedReason: parsed.errors.join(" "),
         escalation: "Fix implementor output format and retry.",
       };
@@ -190,6 +208,7 @@ const createImplementorAgent = (
         stepId: step.id,
         diff: "",
         filesChanged: [],
+        proposed_actions: [],
         blockedReason: enforced.errors.join(" "),
         escalation: "Revise step or constraints and retry.",
       };

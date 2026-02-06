@@ -39,8 +39,15 @@ interface ImplementorResult {
   stepId: string;
   diff: string;
   filesChanged: string[];
+  proposed_actions: ProposedAction[];
   blockedReason: string;
   escalation: string;
+}
+
+interface ProposedAction {
+  type: "write_file" | "delete_file";
+  path: string;
+  content: string;
 }
 
 interface DiffStats {
@@ -89,5 +96,6 @@ export type {
   ImplementorTask,
   ImplementorRunContext,
   InjectedFile,
+  ProposedAction,
   ValidationResult,
 };

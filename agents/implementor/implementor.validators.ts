@@ -47,6 +47,13 @@ const resultSchema = z.object({
   stepId: z.string().min(1),
   diff: z.string(),
   filesChanged: z.array(z.string().min(1)),
+  proposed_actions: z.array(
+    z.object({
+      type: z.enum(["write_file", "delete_file"]),
+      path: z.string().min(1),
+      content: z.string(),
+    })
+  ),
   blockedReason: z.string(),
   escalation: z.string(),
 });
@@ -117,11 +124,19 @@ const validateImplementorResult = (
     if (result.filesChanged.length > 0) {
       errors.push("filesChanged must be empty when status is blocked.");
     }
+    if (result.proposed_actions.length > 0) {
+      errors.push("proposed_actions must be empty when status is blocked.");
+    }
   }
 
   if (result.status === "completed") {
-    if (result.diff.trim().length === 0) {
-      errors.push("diff is required when status is completed.");
+    if (
+      result.diff.trim().length === 0 &&
+      result.proposed_actions.length === 0
+    ) {
+      errors.push(
+        "Either diff or proposed_actions is required when status is completed."
+      );
     }
   }
 
@@ -186,6 +201,14 @@ const hasValidHunkHeaders = (diff: string): boolean => {
   return sawHunk;
 };
 
+const getProposedFiles = (result: ImplementorResult) => {
+  const files: string[] = [];
+  result.proposed_actions.forEach((action) => {
+    files.push(action.path);
+  });
+  return files;
+};
+
 const enforceImplementorConstraints = (
   result: ImplementorResult,
   handoff: ImplementorHandoff
@@ -194,16 +217,34 @@ const enforceImplementorConstraints = (
     return buildErrorResult(["Implementor returned blocked status."]);
   }
 
-  if (!result.diff.trimStart().startsWith("diff --git ")) {
-    return buildErrorResult(["Diff must be a unified diff."]);
-  }
-  if (!hasValidHunkHeaders(result.diff)) {
+  const hasDiff = result.diff.trim().length > 0;
+  const proposedFiles = getProposedFiles(result);
+  if (!hasDiff && proposedFiles.length === 0) {
     return buildErrorResult([
-      "Diff must include valid unified diff hunk headers (e.g., '@@ -1,3 +1,4 @@').",
+      "Either diff or proposed_actions must be provided for completed results.",
     ]);
   }
 
-  const stats = parseUnifiedDiff(result.diff);
+  if (hasDiff) {
+    if (!result.diff.trimStart().startsWith("diff --git ")) {
+      return buildErrorResult(["Diff must be a unified diff."]);
+    }
+    if (!hasValidHunkHeaders(result.diff)) {
+      return buildErrorResult([
+        "Diff must include valid unified diff hunk headers (e.g., '@@ -1,3 +1,4 @@').",
+      ]);
+    }
+  }
+
+  const stats = hasDiff
+    ? parseUnifiedDiff(result.diff)
+    : {
+        filesChanged: proposedFiles,
+        addedLines: 0,
+        removedLines: 0,
+        totalChangedLines: 0,
+        totalBytes: 0,
+      };
   const allowedSet = new Set(handoff.allowed_files);
 
   if (stats.filesChanged.length === 0) {

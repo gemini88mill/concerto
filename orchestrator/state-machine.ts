@@ -1,5 +1,5 @@
 import { createPlannerAgent } from "../agents/planner/planner.agent";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Plan } from "../agents/planner/planner.types";
@@ -99,8 +99,9 @@ const ensureTempDir = async () => {
 
 const applyPatchToRepo = async (patch: string) => {
   const dir = await ensureTempDir();
+  const normalizedPatch = patch.endsWith("\n") ? patch : `${patch}\n`;
   const patchPath = join(dir, `patch-${Bun.randomUUIDv7()}.diff`);
-  await writeFile(patchPath, patch, "utf-8");
+  await writeFile(patchPath, normalizedPatch, "utf-8");
 
   const proc = Bun.spawn(
     ["git", "apply", "--whitespace=nowarn", "--recount", patchPath],
@@ -110,6 +111,47 @@ const applyPatchToRepo = async (patch: string) => {
       stderr: "pipe",
     }
   );
+
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+
+  return {
+    ok: exitCode === 0,
+    stdout,
+    stderr,
+  };
+};
+
+const applyProposedActionsToRepo = async (
+  actions: ImplementorResult["proposed_actions"]
+) => {
+  for (const action of actions) {
+    if (action.type === "delete_file") {
+      await rm(action.path, { force: true });
+      continue;
+    }
+    const content = action.content ?? "";
+    const dir = action.path.includes("/")
+      ? action.path.slice(0, Math.max(0, action.path.lastIndexOf("/")))
+      : "";
+    if (dir.length > 0) {
+      await mkdir(dir, { recursive: true });
+    }
+    await writeFile(action.path, content, "utf-8");
+  }
+};
+
+const getGitDiffForPaths = async (paths: string[]) => {
+  if (paths.length === 0) {
+    return { ok: true, stdout: "", stderr: "" };
+  }
+
+  const proc = Bun.spawn(["git", "diff", "--no-ext-diff", "--", ...paths], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
@@ -291,31 +333,31 @@ const applyUnifiedDiff = (
   return output.join("\n");
 };
 
-const applyDiffToContent = (
-  diff: string,
-  filePath: string,
-  content: string
-): DiffApplyResult | null => {
-  const sections = splitDiffByFile(diff);
-  const section = sections.find((item) => item.filePath === filePath);
-  if (!section) {
-    return { content, deleted: false };
-  }
+// const applyDiffToContent = (
+//   diff: string,
+//   filePath: string,
+//   content: string
+// ): DiffApplyResult | null => {
+//   const sections = splitDiffByFile(diff);
+//   const section = sections.find((item) => item.filePath === filePath);
+//   if (!section) {
+//     return { content, deleted: false };
+//   }
 
-  const deleted = section.lines.some((line) =>
-    line.startsWith("deleted file mode")
-  );
-  if (deleted) {
-    return { content: "", deleted: true };
-  }
+//   const deleted = section.lines.some((line) =>
+//     line.startsWith("deleted file mode")
+//   );
+//   if (deleted) {
+//     return { content: "", deleted: true };
+//   }
 
-  const updated = applyUnifiedDiff(content, section.lines);
-  if (updated === null) {
-    return null;
-  }
+//   const updated = applyUnifiedDiff(content, section.lines);
+//   if (updated === null) {
+//     return null;
+//   }
 
-  return { content: updated, deleted: false };
-};
+//   return { content: updated, deleted: false };
+// };
 
 const buildHandoffFromPlan = async (
   plan: Plan
@@ -404,6 +446,7 @@ const runImplementor = async (
     handoff.injected_files.map((file) => [file.path, file.content])
   );
   const results: ImplementorResult[] = [];
+  const changedFiles = new Set<string>();
 
   for (const step of handoff.steps) {
     if (step.action === "modify" && !injectedMap.has(step.file)) {
@@ -441,51 +484,88 @@ const runImplementor = async (
       return withStep(
         {
           ok: false,
-          error: `Implementor retries exhausted. ${lastBlockedReason || "No reason provided."}`,
+          error: `Implementor retries exhausted. ${
+            lastBlockedReason || "No reason provided."
+          }`,
         },
         "implement"
       );
     }
 
     results.push(stepResult);
-    const previousContent = injectedMap.get(step.file) ?? "";
-    const applied = applyDiffToContent(
-      stepResult.diff,
-      step.file,
-      previousContent
-    );
-    if (!applied) {
-      return withStep(
-        { ok: false, error: "Failed to apply diff for step." },
-        "implement",
-        {
-          stepId: stepResult.stepId,
-          file: step.file,
-          diff: stepResult.diff,
-        }
+    if (stepResult.proposed_actions.length > 0) {
+      const allowedSet = new Set(handoff.allowed_files);
+      const invalid = stepResult.proposed_actions.filter(
+        (action) => !allowedSet.has(action.path)
       );
-    }
-    if (applied.deleted) {
-      injectedMap.delete(step.file);
+      if (invalid.length > 0) {
+        return withStep(
+          { ok: false, error: "Proposed actions include disallowed files." },
+          "implement"
+        );
+      }
+
+      await applyProposedActionsToRepo(stepResult.proposed_actions);
+      stepResult.proposed_actions.forEach((action) => {
+        changedFiles.add(action.path);
+      });
+      for (const action of stepResult.proposed_actions) {
+        if (action.type === "delete_file") {
+          injectedMap.delete(action.path);
+          continue;
+        }
+        const file = Bun.file(action.path);
+        if (await file.exists()) {
+          injectedMap.set(action.path, await file.text());
+        }
+      }
     } else {
-      injectedMap.set(step.file, applied.content);
+      const applyResult = await applyPatchToRepo(stepResult.diff);
+      if (!applyResult.ok) {
+        return withStep(
+          { ok: false, error: applyResult.stderr || "Failed to apply diff." },
+          "implement",
+          {
+            stepId: stepResult.stepId,
+            diff: stepResult.diff,
+          }
+        );
+      }
+      stepResult.filesChanged.forEach((file) => {
+        changedFiles.add(file);
+      });
+      for (const filePath of stepResult.filesChanged) {
+        const file = Bun.file(filePath);
+        if (await file.exists()) {
+          injectedMap.set(filePath, await file.text());
+        } else {
+          injectedMap.delete(filePath);
+        }
+      }
     }
   }
 
-  const mergedDiff = results.map((result) => result.diff).join("\n");
-  const filesChanged = Array.from(
-    new Set(results.flatMap((result) => result.filesChanged))
-  );
-
-  const applyResult = await applyPatchToRepo(mergedDiff);
-  if (!applyResult.ok) {
+  const filesChanged = Array.from(changedFiles);
+  if (filesChanged.length === 0) {
     return withStep(
-      { ok: false, error: applyResult.stderr || "Failed to apply diff." },
-      "implement",
-      {
-        stepId: results[results.length - 1]?.stepId ?? "unknown",
-        diff: mergedDiff,
-      }
+      { ok: false, error: "No files changed by implementor actions." },
+      "implement"
+    );
+  }
+
+  const diffResult = await getGitDiffForPaths(filesChanged);
+  if (!diffResult.ok) {
+    return withStep(
+      { ok: false, error: diffResult.stderr || "Failed to generate diff." },
+      "implement"
+    );
+  }
+
+  const mergedDiff = diffResult.stdout;
+  if (mergedDiff.trim().length === 0) {
+    return withStep(
+      { ok: false, error: "No diff produced for applied actions." },
+      "implement"
     );
   }
 
@@ -497,6 +577,7 @@ const runImplementor = async (
         stepId: results[results.length - 1]?.stepId ?? "unknown",
         diff: mergedDiff,
         filesChanged,
+        proposed_actions: [],
         blockedReason: "",
         escalation: "",
       },
@@ -558,7 +639,9 @@ const runFullPipeline = async (
   console.log(
     `Models: planner=${getAgentModel("planner")}, implementor=${getAgentModel(
       "implementor"
-    )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel("tester")}`
+    )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel(
+      "tester"
+    )}`
   );
   logAgentStart("planner");
   const planResult = await runPlanner(description, resolvedConfig);
@@ -630,7 +713,8 @@ const runFullPipeline = async (
   try {
     implementorHandoff = await buildHandoffFromPlan(planResult.value);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid plan files.";
+    const message =
+      error instanceof Error ? error.message : "Invalid plan files.";
     const errorResult = withStep({ ok: false, error: message }, "implement");
     await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
     return errorResult;
@@ -650,19 +734,23 @@ const runFullPipeline = async (
   let reviewResult: OrchestratorResult<ReviewerDecisionResult> | null = null;
   let rejectionReason = "";
 
-  for (let attempt = 1; attempt <= resolvedConfig.maxReviewRetries; attempt += 1) {
-    implementResult = await runImplementor(
-      implementorHandoff,
-      resolvedConfig
-    );
+  for (
+    let attempt = 1;
+    attempt <= resolvedConfig.maxReviewRetries;
+    attempt += 1
+  ) {
+    implementResult = await runImplementor(implementorHandoff, resolvedConfig);
     if (!implementResult.ok || !implementResult.value) {
       if (implementResult.diagnostic?.diff) {
         failedDiffIndex += 1;
-        await writeJson(`${context.run_dir}/implementor.failed.${failedDiffIndex}.json`, {
-          step: implementResult.step ?? "implement",
-          error: implementResult.error ?? "Implementor failed.",
-          diagnostic: implementResult.diagnostic,
-        });
+        await writeJson(
+          `${context.run_dir}/implementor.failed.${failedDiffIndex}.json`,
+          {
+            step: implementResult.step ?? "implement",
+            error: implementResult.error ?? "Implementor failed.",
+            diagnostic: implementResult.diagnostic,
+          }
+        );
       }
       await writeJson(
         `${context.run_dir}/implementor.error.json`,
@@ -670,7 +758,10 @@ const runFullPipeline = async (
       );
       return implementResult;
     }
-    await writeJson(`${context.run_dir}/implementor.json`, implementResult.value);
+    await writeJson(
+      `${context.run_dir}/implementor.json`,
+      implementResult.value
+    );
 
     runHandoff = updateHandoff({
       handoff: runHandoff,
@@ -694,10 +785,7 @@ const runFullPipeline = async (
     await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
 
     logAgentStart("reviewer");
-    reviewResult = await runReviewer(
-      implementorHandoff,
-      implementResult.value
-    );
+    reviewResult = await runReviewer(implementorHandoff, implementResult.value);
     if (!reviewResult.ok || !reviewResult.value) {
       await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
       return reviewResult;
@@ -706,21 +794,21 @@ const runFullPipeline = async (
 
     const reviewApproved = reviewResult.value.decision === "approved";
     const reviewNext = reviewApproved
-    ? {
-        agent: "tester",
-        inputArtifacts: ["plan.json", "implementor.json", "review.json"],
-        instructions: [
-          "Add or update tests if required by the plan.",
-          "Run the configured test command and report results.",
-        ],
-      }
-    : {
-        agent: "implementer",
-        inputArtifacts: ["plan.json", "implementor.json", "review.json"],
-        instructions: [
-          "Address review feedback and update the implementation.",
-        ],
-      };
+      ? {
+          agent: "tester",
+          inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+          instructions: [
+            "Add or update tests if required by the plan.",
+            "Run the configured test command and report results.",
+          ],
+        }
+      : {
+          agent: "implementer",
+          inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+          instructions: [
+            "Address review feedback and update the implementation.",
+          ],
+        };
 
     runHandoff = updateHandoff({
       handoff: runHandoff,
