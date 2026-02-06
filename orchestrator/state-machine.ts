@@ -1,4 +1,7 @@
 import { createPlannerAgent } from "../agents/planner/planner.agent";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Plan } from "../agents/planner/planner.types";
 import type {
   ImplementorHandoff,
@@ -40,6 +43,28 @@ const withStep = <T>(
   diagnostic,
 });
 
+const getAgentModel = (
+  agent: "planner" | "implementor" | "reviewer" | "tester"
+) => {
+  const shared = process.env.OPENAI_MODEL;
+  if (agent === "planner") {
+    return process.env.OPENAI_PLANNER_MODEL ?? shared ?? "gpt-5-nano";
+  }
+  if (agent === "implementor") {
+    return process.env.OPENAI_IMPLEMENTOR_MODEL ?? shared ?? "gpt-5";
+  }
+  if (agent === "reviewer") {
+    return process.env.OPENAI_REVIEWER_MODEL ?? shared ?? "gpt-5";
+  }
+  return process.env.OPENAI_TESTER_MODEL ?? shared ?? "gpt-5";
+};
+
+const logAgentStart = (
+  agent: "planner" | "implementor" | "reviewer" | "tester"
+) => {
+  console.log(`Step: ${agent} - started (model=${getAgentModel(agent)})`);
+};
+
 const createTask = (description: string): OrchestratorTask => {
   return {
     task_id: Bun.randomUUIDv7(),
@@ -64,6 +89,37 @@ const buildInjectedFiles = async (allowedFiles: string[]) => {
   }
 
   return injectedFiles;
+};
+
+const ensureTempDir = async () => {
+  const dir = join(tmpdir(), "concerto-orchestrator");
+  await mkdir(dir, { recursive: true });
+  return dir;
+};
+
+const applyPatchToRepo = async (patch: string) => {
+  const dir = await ensureTempDir();
+  const patchPath = join(dir, `patch-${Bun.randomUUIDv7()}.diff`);
+  await writeFile(patchPath, patch, "utf-8");
+
+  const proc = Bun.spawn(
+    ["git", "apply", "--whitespace=nowarn", "--recount", patchPath],
+    {
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+
+  return {
+    ok: exitCode === 0,
+    stdout,
+    stderr,
+  };
 };
 
 interface DiffApplyResult {
@@ -307,6 +363,7 @@ const runPlanner = async (
     try {
       const plan = await planner.plan({
         task: description,
+        // NOTE: This summary is repo-specific; update when adapting to other projects.
         repoSummary:
           "Bun-based CLI orchestrator using commander. Entry point index.ts. Agents live under agents/.",
         constraints: {
@@ -420,6 +477,18 @@ const runImplementor = async (
     new Set(results.flatMap((result) => result.filesChanged))
   );
 
+  const applyResult = await applyPatchToRepo(mergedDiff);
+  if (!applyResult.ok) {
+    return withStep(
+      { ok: false, error: applyResult.stderr || "Failed to apply diff." },
+      "implement",
+      {
+        stepId: results[results.length - 1]?.stepId ?? "unknown",
+        diff: mergedDiff,
+      }
+    );
+  }
+
   return withStep(
     {
       ok: true,
@@ -486,7 +555,12 @@ const runFullPipeline = async (
   const context = await createRunContext(task);
   let failedDiffIndex = 0;
 
-  console.log(JSON.stringify({ step: "plan", status: "started" }, null, 2));
+  console.log(
+    `Models: planner=${getAgentModel("planner")}, implementor=${getAgentModel(
+      "implementor"
+    )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel("tester")}`
+  );
+  logAgentStart("planner");
   const planResult = await runPlanner(description, resolvedConfig);
   if (!planResult.ok || !planResult.value) {
     await writeJson(`${context.run_dir}/plan.error.json`, planResult);
@@ -551,7 +625,7 @@ const runFullPipeline = async (
   await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
   await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
 
-  console.log(JSON.stringify({ step: "implement", status: "started" }, null, 2));
+  logAgentStart("implementor");
   let implementorHandoff: ImplementorHandoff;
   try {
     implementorHandoff = await buildHandoffFromPlan(planResult.value);
@@ -619,7 +693,7 @@ const runFullPipeline = async (
     await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
     await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
 
-    console.log(JSON.stringify({ step: "review", status: "started" }, null, 2));
+    logAgentStart("reviewer");
     reviewResult = await runReviewer(
       implementorHandoff,
       implementResult.value
@@ -678,9 +752,7 @@ const runFullPipeline = async (
 
     rejectionReason = reviewResult.value.reasons.join(" ");
     if (attempt < resolvedConfig.maxReviewRetries) {
-      console.log(
-        JSON.stringify({ step: "implement", status: "started" }, null, 2)
-      );
+      logAgentStart("implementor");
       continue;
     }
 
@@ -717,7 +789,7 @@ const runFullPipeline = async (
     await writeJson(`${context.run_dir}/test.json`, skippedResult);
   }
 
-  console.log(JSON.stringify({ step: "test", status: "started" }, null, 2));
+  logAgentStart("tester");
   const testResult = requiresTests
     ? await runTester(implementorHandoff, implementResult.value, resolvedConfig)
     : { ok: true, value: null };

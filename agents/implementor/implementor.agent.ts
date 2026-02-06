@@ -1,8 +1,5 @@
 import OpenAI from "openai";
-import type {
-  ResponseFunctionToolCall,
-  ResponseInputItem,
-} from "openai/resources/responses/responses";
+import type { ResponseInputItem } from "openai/resources/responses/responses";
 import type {
   ImplementorAgent,
   ImplementorAgentOptions,
@@ -15,10 +12,8 @@ import {
   validateImplementorHandoff,
   validateImplementorResult,
 } from "./implementor.validators";
-import { executeTool, toolDefinitions } from "./implementor.tools";
 
-const DEFAULT_SYSTEM_PROMPT_PATH =
-  "agents/implementor/implementor.system.md";
+const DEFAULT_SYSTEM_PROMPT_PATH = "agents/implementor/implementor.system.md";
 const DEFAULT_DEVELOPER_PROMPT_PATH =
   "agents/implementor/implementor.developer.md";
 
@@ -76,7 +71,11 @@ const buildUserInput = (step: ImplementorStep, handoff: ImplementorHandoff) => {
 const createImplementorAgent = (
   options: ImplementorAgentOptions = {}
 ): ImplementorAgent => {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5";
+  const model =
+    options.model ??
+    process.env.OPENAI_IMPLEMENTOR_MODEL ??
+    process.env.OPENAI_MODEL ??
+    "gpt-5";
   const systemPromptPath =
     options.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_PATH;
   const developerPromptPath =
@@ -86,53 +85,23 @@ const createImplementorAgent = (
     apiKey: process.env.OPENAI_API_KEY,
   });
 
-  const runWithTools = async (
+  const runWithoutTools = async (
     systemPrompt: string,
     inputItems: ResponseInputItem[]
   ) => {
-    let pendingInput: ResponseInputItem[] = inputItems;
-    let iterations = 0;
-
-    while (iterations < 8) {
-      iterations += 1;
-      const response = await openai.responses.create({
-        model,
-        instructions: systemPrompt,
-        input: pendingInput,
-        tools: toolDefinitions,
-        text: {
-          format: {
-            type: "json_schema",
-            name: "ImplementorResult",
-            schema: RESULT_JSON_SCHEMA,
-            strict: true,
-          },
+    return openai.responses.create({
+      model,
+      instructions: systemPrompt,
+      input: inputItems,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "ImplementorResult",
+          schema: RESULT_JSON_SCHEMA,
+          strict: true,
         },
-      });
-
-      const toolCalls = response.output.filter(
-        (item): item is ResponseFunctionToolCall =>
-          item.type === "function_call"
-      );
-
-      if (toolCalls.length === 0) {
-        return response;
-      }
-
-      const toolOutputs: ResponseInputItem[] = [];
-      for (const call of toolCalls) {
-        const result = await executeTool(call.name, call.arguments);
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: call.call_id,
-          output: JSON.stringify(result),
-        });
-      }
-
-      pendingInput = [...pendingInput, ...response.output, ...toolOutputs];
-    }
-
-    throw new Error("Tool loop exceeded max iterations.");
+      },
+    });
   };
 
   const runStep = async (
@@ -155,7 +124,7 @@ const createImplementorAgent = (
     const developerPrompt = await readPrompt(developerPromptPath);
     const userInput = buildUserInput(step, validated.value);
 
-    const response = await runWithTools(systemPrompt, [
+    const response = await runWithoutTools(systemPrompt, [
       {
         role: "developer",
         content: developerPrompt,
@@ -178,8 +147,32 @@ const createImplementorAgent = (
       };
     }
 
-    const parsed = validateImplementorResult(JSON.parse(outputText));
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(outputText);
+    } catch (error) {
+      console.error(error);
+      console.log(
+        `Implementor raw output (invalid JSON): ${outputText.slice(0, 4000)}`
+      );
+      return {
+        status: "blocked",
+        stepId: step.id,
+        diff: "",
+        filesChanged: [],
+        blockedReason: "Implementor returned invalid JSON output.",
+        escalation: "Fix implementor output format and retry.",
+      };
+    }
+
+    const parsed = validateImplementorResult(parsedJson);
     if (!parsed.ok || !parsed.value) {
+      console.log(
+        `Implementor raw output (validation failed): ${outputText.slice(
+          0,
+          4000
+        )}`
+      );
       return {
         status: "blocked",
         stepId: step.id,

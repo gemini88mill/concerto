@@ -72,7 +72,11 @@ const buildFailedResult = (taskId: string, reason: string, logs: string): Tester
 const createTesterAgent = (
   options: TesterAgentOptions = {}
 ): TesterAgent => {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5";
+  const model =
+    options.model ??
+    process.env.OPENAI_TESTER_MODEL ??
+    process.env.OPENAI_MODEL ??
+    "gpt-5";
   const systemPromptPath = options.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_PATH;
   const developerPromptPath =
     options.developerPromptPath ?? DEFAULT_DEVELOPER_PROMPT_PATH;

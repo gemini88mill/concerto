@@ -5,4 +5,4 @@ You must output JSON only, matching the required schema. Do not include markdown
 Return a unified diff in the "diff" field when status is "completed". The diff must include proper hunk headers with line ranges (e.g., "@@ -1,3 +1,4 @@") and correct file paths (a/... b/...). Avoid placeholder headers like "@@".
 Do not modify tests, add dependencies, or change architecture.
 If blocked, leave diff empty and explain the blocker in "blockedReason" with a clear escalation.
-You may use the provided tools to apply your diff, inspect git status, or run allowlisted commands.
+Only produce the unified diff in the required format. Do not attempt to apply patches or run tools; the orchestrator will apply the diff after you return.

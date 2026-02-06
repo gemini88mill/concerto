@@ -116,7 +116,11 @@ const buildApprovedDecision = (taskId: string): ReviewerDecisionResult => ({
 const createReviewerAgent = (
   options: ReviewerAgentOptions = {}
 ): ReviewerAgent => {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5";
+  const model =
+    options.model ??
+    process.env.OPENAI_REVIEWER_MODEL ??
+    process.env.OPENAI_MODEL ??
+    "gpt-5";
   const systemPromptPath = options.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_PATH;
   const developerPromptPath =
     options.developerPromptPath ?? DEFAULT_DEVELOPER_PROMPT_PATH;

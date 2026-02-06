@@ -4,7 +4,7 @@ import { createInitialHandoff, updateHandoff } from "../orchestrator/handoff";
 import { createTask, runPlanner } from "../orchestrator/state-machine";
 import {
   defaultAgentRunOptions,
-  stepStartOutput,
+  stepStartLine,
   successOutput,
   toStepOutput,
 } from "./shared";
@@ -14,7 +14,7 @@ export const registerPlanCommand = (program: Command) => {
     .command("plan <task>")
     .description("Run S0 → S1 only, output PlanHandoff.")
     .action(async (task: string) => {
-      console.log(JSON.stringify(stepStartOutput("plan"), null, 2));
+      console.log(stepStartLine("planner"));
       const taskRecord = createTask(task);
       const context = await createRunContext(taskRecord);
 

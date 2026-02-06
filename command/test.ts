@@ -10,7 +10,7 @@ import {
   readPlanFile,
   readRunHandoffFile,
   resolveRunDir,
-  stepStartOutput,
+  stepStartLine,
   successOutput,
   toStepOutput,
 } from "./shared";
@@ -25,7 +25,7 @@ export const registerTestCommand = (program: Command) => {
     .description("Run S4 only.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: TestOptions) => {
-      console.log(JSON.stringify(stepStartOutput("test"), null, 2));
+      console.log(stepStartLine("tester"));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);

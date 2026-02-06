@@ -1,6 +1,5 @@
 import type { Command } from "commander";
 import { runFullPipeline } from "../orchestrator/state-machine";
-import { stepStartOutput } from "./shared";
 
 export const registerRunCommand = (program: Command) => {
   program
@@ -9,7 +8,8 @@ export const registerRunCommand = (program: Command) => {
       "Run the full state machine with a human checkpoint at PR creation."
     )
     .action(async (task: string) => {
-      console.log(JSON.stringify(stepStartOutput("run"), null, 2));
+      // Emit a human-readable progress message instead of JSON for step reporting
+      console.log(`Step: run - starting task '${task}'`);
       const result = await runFullPipeline(task);
       console.log(JSON.stringify(result, null, 2));
     });

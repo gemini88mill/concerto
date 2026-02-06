@@ -72,6 +72,24 @@ interface StepStartOutput {
   status: "started";
 }
 
+const getAgentModel = (agent: "planner" | "implementor" | "reviewer" | "tester") => {
+  const shared = process.env.OPENAI_MODEL;
+  if (agent === "planner") {
+    return process.env.OPENAI_PLANNER_MODEL ?? shared ?? "gpt-5-nano";
+  }
+  if (agent === "implementor") {
+    return process.env.OPENAI_IMPLEMENTOR_MODEL ?? shared ?? "gpt-5";
+  }
+  if (agent === "reviewer") {
+    return process.env.OPENAI_REVIEWER_MODEL ?? shared ?? "gpt-5";
+  }
+  return process.env.OPENAI_TESTER_MODEL ?? shared ?? "gpt-5";
+};
+
+export const stepStartLine = (
+  agent: "planner" | "implementor" | "reviewer" | "tester"
+) => `Step: ${agent} - started (model=${getAgentModel(agent)})`;
+
 export const defaultAgentRunOptions: AgentRunOptions = {
   maxPlanRetries: 2,
   maxImplementorRetries: 3,

@@ -250,7 +250,11 @@ const executeTool = async (name: string, input: string) => {
 const createPlannerAgent = (
   options: PlannerAgentOptions = {}
 ): PlannerAgent => {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5-nano";
+  const model =
+    options.model ??
+    process.env.OPENAI_PLANNER_MODEL ??
+    process.env.OPENAI_MODEL ??
+    "gpt-5-nano";
   const systemPromptPath =
     options.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_PATH;
   const developerPromptPath =
