@@ -9,6 +9,7 @@ This is where the todos are for this project to be viable
   - right now I have done very minor changes, but I expect that there will need to be more complex changes that need to take place, and this thing needs to handle it.
 - ability to accept .md and .json as input for the run.
 - create a queueing system for multiple runs to go through the agents when they become available.
+- code cleanup, come up with standards for the app style guidelines
 
 ## Next Steps
 

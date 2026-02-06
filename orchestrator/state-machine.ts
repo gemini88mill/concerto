@@ -95,7 +95,7 @@ const createWorkBranch = async (
   taskDescription: string
 ) => {
   const baseBranch = await getCurrentBranch(repoRoot);
-  const branchName = `orchestrator/${slugifyBranchName(taskDescription)}`;
+  const branchName = `concerto/${slugifyBranchName(taskDescription)}`;
   const result = await runGitCommand(
     ["checkout", "-b", branchName],
     repoRoot
