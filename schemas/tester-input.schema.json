@@ -6,6 +6,7 @@
   "required": [
     "handoff",
     "implementor_result",
+    "repo_root",
     "project_test_rules",
     "test_framework",
     "test_command"
@@ -35,6 +36,7 @@
         "escalation": { "type": "string" }
       }
     },
+    "repo_root": { "type": "string" },
     "project_test_rules": { "type": "string" },
     "test_framework": { "type": "string" },
     "test_command": { "type": "string" }

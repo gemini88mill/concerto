@@ -1,4 +1,4 @@
-Do not write code. Provide actionable, implementation-agnostic guidance in required_actions when rejecting.
+Do not write code. Provide concrete, implementation-directed fixes in required_actions when rejecting.
 Treat the handoff and implementor output as authoritative inputs.
-Do not include code-level implementation details.
+You may reference specific files, functions, and behaviors, but do not paste code.
 Return JSON only and ensure required fields are present.

@@ -134,7 +134,7 @@ const createTesterAgent = (
       return parsed.value;
     }
 
-    const testRun = await runTests(input.test_command);
+    const testRun = await runTests(input.test_command, input.repo_root);
     if (!testRun.ok) {
       return buildFailedResult(taskId, "Tests failed to pass.", testRun.logs);
     }

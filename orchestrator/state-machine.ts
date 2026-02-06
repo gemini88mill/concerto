@@ -1,7 +1,7 @@
 import { createPlannerAgent } from "../agents/planner/planner.agent";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Plan } from "../agents/planner/planner.types";
 import type {
   ImplementorHandoff,
@@ -31,6 +31,236 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   maxReviewRetries: 3,
   testCommand: "bunx vitest",
   testFramework: "vitest",
+};
+
+const WORKSPACES_ROOT = ".orchestrator/workspaces";
+
+const runGitCommand = async (args: string[], cwd: string) => {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+
+  return {
+    ok: exitCode === 0,
+    stdout,
+    stderr,
+    exitCode,
+  };
+};
+
+const ensureWorkspaceRoot = async () => {
+  const root = join(process.cwd(), WORKSPACES_ROOT);
+  await mkdir(root, { recursive: true });
+  return root;
+};
+
+const cloneRepo = async (repoUrl: string, runId: string) => {
+  const workspaceRoot = await ensureWorkspaceRoot();
+  const workspaceDir = join(workspaceRoot, runId);
+  await rm(workspaceDir, { recursive: true, force: true });
+
+  const cloneResult = await runGitCommand(
+    ["clone", "--depth", "1", repoUrl, workspaceDir],
+    process.cwd()
+  );
+  if (!cloneResult.ok) {
+    const message = cloneResult.stderr || cloneResult.stdout || "Unknown error.";
+    throw new Error(`Git clone failed: ${message}`);
+  }
+
+  return workspaceDir;
+};
+
+const slugifyBranchName = (value: string) => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
+  if (normalized.length === 0) {
+    return "task";
+  }
+  return normalized.length > 60 ? normalized.slice(0, 60) : normalized;
+};
+
+const createWorkBranch = async (
+  repoRoot: string,
+  taskDescription: string
+) => {
+  const baseBranch = await getCurrentBranch(repoRoot);
+  const branchName = `orchestrator/${slugifyBranchName(taskDescription)}`;
+  const result = await runGitCommand(
+    ["checkout", "-b", branchName],
+    repoRoot
+  );
+  if (!result.ok) {
+    const message = result.stderr || result.stdout || "Unknown error.";
+    throw new Error(`Git branch creation failed: ${message}`);
+  }
+  return { branchName, baseBranch };
+};
+
+const cleanupWorkspace = async (workspaceDir: string) => {
+  await rm(workspaceDir, { recursive: true, force: true });
+};
+
+const getCurrentBranch = async (repoRoot: string) => {
+  const result = await runGitCommand(
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    repoRoot
+  );
+  if (!result.ok) {
+    return "";
+  }
+  return result.stdout.trim();
+};
+
+interface RepoInfo {
+  owner: string;
+  repo: string;
+  host: string;
+}
+
+const parseGitHubRepoUrl = (repoUrl: string): RepoInfo => {
+  const trimmed = repoUrl.trim();
+  if (trimmed.startsWith("git@")) {
+    const match = /^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/.exec(trimmed);
+    if (!match) {
+      throw new Error("Unsupported SSH repository URL format.");
+    }
+    return {
+      host: match[1] ?? "",
+      owner: match[2] ?? "",
+      repo: match[3] ?? "",
+    };
+  }
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    const url = new URL(trimmed);
+    const parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (parts.length < 2) {
+      throw new Error("Repository URL missing owner or repo.");
+    }
+    const repo = (parts[1] ?? "").replace(/\.git$/i, "");
+    return {
+      host: url.hostname,
+      owner: parts[0] ?? "",
+      repo,
+    };
+  }
+
+  throw new Error("Unsupported repository URL format.");
+};
+
+const createPullRequest = async (params: {
+  repoUrl: string;
+  token: string;
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+}) => {
+  const info = parseGitHubRepoUrl(params.repoUrl);
+  if (info.host !== "github.com") {
+    throw new Error("Only github.com repositories are supported.");
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${info.owner}/${info.repo}/pulls`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "concerto-orchestrator",
+      },
+      body: JSON.stringify({
+        title: params.title,
+        head: params.head,
+        base: params.base,
+        body: params.body,
+      }),
+    }
+  );
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`GitHub PR creation failed: ${text}`);
+  }
+
+  const data = JSON.parse(text);
+  return {
+    url: typeof data.html_url === "string" ? data.html_url : "",
+    number: typeof data.number === "number" ? data.number : 0,
+  };
+};
+
+const getGitStatus = async (repoRoot: string) => {
+  const result = await runGitCommand(["status", "--porcelain"], repoRoot);
+  if (!result.ok) {
+    return { ok: false, error: result.stderr || result.stdout || "Git status failed." };
+  }
+  return { ok: true, output: result.stdout };
+};
+
+const commitChanges = async (repoRoot: string, message: string) => {
+  const addResult = await runGitCommand(["add", "-A"], repoRoot);
+  if (!addResult.ok) {
+    return {
+      ok: false,
+      error: addResult.stderr || addResult.stdout || "Git add failed.",
+    };
+  }
+
+  const commitResult = await runGitCommand(["commit", "-m", message], repoRoot);
+  if (!commitResult.ok) {
+    return {
+      ok: false,
+      error: commitResult.stderr || commitResult.stdout || "Git commit failed.",
+    };
+  }
+
+  return { ok: true };
+};
+
+const readProjectRules = async (repoRoot: string) => {
+  const path = join(repoRoot, "AGENTS.md");
+  const file = Bun.file(path);
+  const exists = await file.exists();
+  if (!exists) {
+    return "No project rules provided.";
+  }
+  return file.text();
+};
+
+const resolveRepoPath = (repoRoot: string, filePath: string) => {
+  if (filePath.trim().length === 0) {
+    throw new Error("Path must not be empty.");
+  }
+  if (isAbsolute(filePath)) {
+    throw new Error(`Path must be repo-relative: ${filePath}`);
+  }
+
+  const resolvedRoot = resolve(repoRoot);
+  const resolvedPath = resolve(resolvedRoot, filePath);
+  const rootLower = resolvedRoot.toLowerCase();
+  const pathLower = resolvedPath.toLowerCase();
+  const rootPrefix = resolvedRoot.endsWith(sep)
+    ? rootLower
+    : rootLower + sep;
+
+  if (pathLower !== rootLower && !pathLower.startsWith(rootPrefix)) {
+    throw new Error(`Path escapes repo root: ${filePath}`);
+  }
+
+  return resolvedPath;
 };
 
 const withStep = <T>(
@@ -73,11 +303,12 @@ const createTask = (description: string): OrchestratorTask => {
   };
 };
 
-const buildInjectedFiles = async (allowedFiles: string[]) => {
+const buildInjectedFiles = async (repoRoot: string, allowedFiles: string[]) => {
   const injectedFiles: { path: string; content: string }[] = [];
 
   for (const file of allowedFiles) {
-    const fileHandle = Bun.file(file);
+    const resolvedPath = resolveRepoPath(repoRoot, file);
+    const fileHandle = Bun.file(resolvedPath);
     const exists = await fileHandle.exists();
     if (!exists) {
       continue;
@@ -97,7 +328,7 @@ const ensureTempDir = async () => {
   return dir;
 };
 
-const applyPatchToRepo = async (patch: string) => {
+const applyPatchToRepo = async (repoRoot: string, patch: string) => {
   const dir = await ensureTempDir();
   const normalizedPatch = patch.endsWith("\n") ? patch : `${patch}\n`;
   const patchPath = join(dir, `patch-${Bun.randomUUIDv7()}.diff`);
@@ -106,7 +337,7 @@ const applyPatchToRepo = async (patch: string) => {
   const proc = Bun.spawn(
     ["git", "apply", "--whitespace=nowarn", "--recount", patchPath],
     {
-      cwd: process.cwd(),
+      cwd: repoRoot,
       stdout: "pipe",
       stderr: "pipe",
     }
@@ -124,31 +355,31 @@ const applyPatchToRepo = async (patch: string) => {
 };
 
 const applyProposedActionsToRepo = async (
+  repoRoot: string,
   actions: ImplementorResult["proposed_actions"]
 ) => {
   for (const action of actions) {
+    const targetPath = resolveRepoPath(repoRoot, action.path);
     if (action.type === "delete_file") {
-      await rm(action.path, { force: true });
+      await rm(targetPath, { force: true });
       continue;
     }
     const content = action.content ?? "";
-    const dir = action.path.includes("/")
-      ? action.path.slice(0, Math.max(0, action.path.lastIndexOf("/")))
-      : "";
-    if (dir.length > 0) {
+    const dir = dirname(targetPath);
+    if (dir.length > 0 && dir !== ".") {
       await mkdir(dir, { recursive: true });
     }
-    await writeFile(action.path, content, "utf-8");
+    await writeFile(targetPath, content, "utf-8");
   }
 };
 
-const getGitDiffForPaths = async (paths: string[]) => {
+const getGitDiffForPaths = async (repoRoot: string, paths: string[]) => {
   if (paths.length === 0) {
     return { ok: true, stdout: "", stderr: "" };
   }
 
   const proc = Bun.spawn(["git", "diff", "--no-ext-diff", "--", ...paths], {
-    cwd: process.cwd(),
+    cwd: repoRoot,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -182,22 +413,28 @@ interface ResolvedPlanFiles {
 
 const isGlobPattern = (value: string) => /[*?\[]/.test(value);
 
-const expandPattern = async (pattern: string): Promise<string[]> => {
+const expandPattern = async (
+  repoRoot: string,
+  pattern: string
+): Promise<string[]> => {
   const glob = new Bun.Glob(pattern);
   const matches: string[] = [];
-  for await (const match of glob.scan({ cwd: "." })) {
+  for await (const match of glob.scan({ cwd: repoRoot })) {
     matches.push(match);
   }
   return matches;
 };
 
-const resolvePlanFiles = async (plan: Plan): Promise<ResolvedPlanFiles> => {
+const resolvePlanFiles = async (
+  repoRoot: string,
+  plan: Plan
+): Promise<ResolvedPlanFiles> => {
   const allowedFilesSet = new Set<string>();
   const errors: string[] = [];
 
   for (const entry of plan.allowed_files) {
     if (isGlobPattern(entry)) {
-      const matches = await expandPattern(entry);
+      const matches = await expandPattern(repoRoot, entry);
       if (matches.length === 0) {
         errors.push(`allowed_files pattern "${entry}" matched no files.`);
       } else {
@@ -211,7 +448,7 @@ const resolvePlanFiles = async (plan: Plan): Promise<ResolvedPlanFiles> => {
   const steps: ImplementorStep[] = [];
   for (const step of plan.steps) {
     if (isGlobPattern(step.file)) {
-      const matches = await expandPattern(step.file);
+      const matches = await expandPattern(repoRoot, step.file);
       if (matches.length === 0) {
         errors.push(`Step ${step.id} pattern "${step.file}" matched no files.`);
       } else {
@@ -360,16 +597,17 @@ const applyUnifiedDiff = (
 // };
 
 const buildHandoffFromPlan = async (
+  repoRoot: string,
   plan: Plan
 ): Promise<ImplementorHandoff> => {
-  const resolved = await resolvePlanFiles(plan);
+  const resolved = await resolvePlanFiles(repoRoot, plan);
   if (resolved.errors.length > 0) {
     throw new Error(resolved.errors.join(" "));
   }
 
   const allowedFiles = resolved.allowedFiles;
   const steps: ImplementorStep[] = resolved.steps;
-  const injectedFiles = await buildInjectedFiles(allowedFiles);
+  const injectedFiles = await buildInjectedFiles(repoRoot, allowedFiles);
   const maxFiles = Math.max(1, Math.min(allowedFiles.length, 3));
 
   return {
@@ -433,7 +671,8 @@ const runPlanner = async (
 
 const runImplementor = async (
   handoff: ImplementorHandoff,
-  config: OrchestratorConfig
+  config: OrchestratorConfig,
+  repoRoot: string
 ): Promise<OrchestratorResult<ImplementorResult>> => {
   if (handoff.steps.length === 0) {
     return withStep(
@@ -505,7 +744,7 @@ const runImplementor = async (
         );
       }
 
-      await applyProposedActionsToRepo(stepResult.proposed_actions);
+      await applyProposedActionsToRepo(repoRoot, stepResult.proposed_actions);
       stepResult.proposed_actions.forEach((action) => {
         changedFiles.add(action.path);
       });
@@ -520,7 +759,7 @@ const runImplementor = async (
         }
       }
     } else {
-      const applyResult = await applyPatchToRepo(stepResult.diff);
+      const applyResult = await applyPatchToRepo(repoRoot, stepResult.diff);
       if (!applyResult.ok) {
         return withStep(
           { ok: false, error: applyResult.stderr || "Failed to apply diff." },
@@ -553,7 +792,7 @@ const runImplementor = async (
     );
   }
 
-  const diffResult = await getGitDiffForPaths(filesChanged);
+  const diffResult = await getGitDiffForPaths(repoRoot, filesChanged);
   if (!diffResult.ok) {
     return withStep(
       { ok: false, error: diffResult.stderr || "Failed to generate diff." },
@@ -588,9 +827,10 @@ const runImplementor = async (
 
 const runReviewer = async (
   handoff: ImplementorHandoff,
-  implementorResult: ImplementorResult
+  implementorResult: ImplementorResult,
+  repoRoot: string
 ): Promise<OrchestratorResult<ReviewerDecisionResult>> => {
-  const projectRules = await Bun.file("AGENTS.md").text();
+  const projectRules = await readProjectRules(repoRoot);
   const reviewerInput: ReviewerInput = {
     handoff,
     implementor_result: implementorResult,
@@ -611,12 +851,14 @@ const runReviewer = async (
 const runTester = async (
   handoff: ImplementorHandoff,
   implementorResult: ImplementorResult,
-  config: OrchestratorConfig
+  config: OrchestratorConfig,
+  repoRoot: string
 ): Promise<OrchestratorResult<TesterResult>> => {
-  const projectRules = await Bun.file("AGENTS.md").text();
+  const projectRules = await readProjectRules(repoRoot);
   const testerInput: TesterInput = {
     handoff,
     implementor_result: implementorResult,
+    repo_root: repoRoot,
     project_test_rules: projectRules,
     test_framework: config.testFramework,
     test_command: config.testCommand,
@@ -627,119 +869,155 @@ const runTester = async (
   return withStep({ ok: true, value: result }, "test");
 };
 
-const runFullPipeline = async (
-  description: string,
-  config?: Partial<OrchestratorConfig>
-) => {
-  const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
-  const task = createTask(description);
+interface RunPipelineParams {
+  task: string;
+  repoUrl: string;
+  keepWorkspace?: boolean;
+  config?: Partial<OrchestratorConfig>;
+}
+
+const runFullPipeline = async (params: RunPipelineParams) => {
+  const resolvedConfig = { ...DEFAULT_CONFIG, ...params.config };
+  const task = createTask(params.task);
   const context = await createRunContext(task);
+  const keepWorkspace = params.keepWorkspace ?? false;
+  let workspaceDir = "";
+  let repoRoot = "";
+  let branchInfo: { branchName: string; baseBranch: string } | null = null;
+  let pipelineResult: OrchestratorResult<TesterResult | null>;
   let failedDiffIndex = 0;
+  const githubToken = process.env.GITHUB_TOKEN ?? "";
 
-  console.log(
-    `Models: planner=${getAgentModel("planner")}, implementor=${getAgentModel(
-      "implementor"
-    )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel(
-      "tester"
-    )}`
-  );
-  logAgentStart("planner");
-  const planResult = await runPlanner(description, resolvedConfig);
-  if (!planResult.ok || !planResult.value) {
-    await writeJson(`${context.run_dir}/plan.error.json`, planResult);
-    return planResult;
-  }
-  await writeJson(`${context.run_dir}/plan.json`, planResult.value);
-
-  const requiresTests = planResult.value.tasks.some(
-    (task) => task.requiresTests
-  );
-  const baseHandoff = createInitialHandoff({
-    run: {
-      id: context.run_id,
-      createdAt: context.task.created_at,
-      repo: {
-        root: ".",
-        branch: "",
-        baseBranch: "",
-      },
-    },
-    task: {
-      id: context.task.task_id,
-      prompt: context.task.description,
-      mode: "full",
-    },
-    artifacts: {
-      task: "task.json",
-      plan: "plan.json",
-      implementation: "implementor.json",
-      review: "review.json",
-      tests: "test.json",
-      prDraft: "pr-draft.json",
-      handoff: "handoff.json",
-      handoffImplementor: "handoff.implementor.json",
-      handoffReview: "handoff.review.json",
-      handoffTest: "handoff.test.json",
-    },
-    constraints: {
-      estimatedFilesChangedLimit: planResult.value.scope.estimatedFilesChanged,
-      noBreakingChanges: !planResult.value.scope.breakingChange,
-      requireTestsForBehaviorChange: requiresTests,
-    },
-    next: {
-      agent: "implementer",
-      inputArtifacts: ["plan.json"],
-      instructions: [
-        "Implement the plan within allowed files.",
-        "Update handoff.json for reviewer.",
-      ],
-    },
-  });
-
-  let runHandoff = updateHandoff({
-    handoff: baseHandoff,
-    phase: "plan",
-    status: "completed",
-    artifact: "plan.json",
-    endedAt: new Date().toISOString(),
-    next: baseHandoff.next,
-  });
-
-  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-  await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
-
-  logAgentStart("implementor");
-  let implementorHandoff: ImplementorHandoff;
   try {
-    implementorHandoff = await buildHandoffFromPlan(planResult.value);
+    workspaceDir = await cloneRepo(params.repoUrl, task.task_id);
+    repoRoot = workspaceDir;
+    branchInfo = await createWorkBranch(repoRoot, task.description);
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Invalid plan files.";
-    const errorResult = withStep({ ok: false, error: message }, "implement");
-    await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
-    return errorResult;
+      error instanceof Error ? error.message : "Failed to clone repository.";
+    pipelineResult = withStep({ ok: false, error: message }, "clone");
+    await writeJson(`${context.run_dir}/plan.error.json`, pipelineResult);
+    if (!keepWorkspace && workspaceDir.length > 0) {
+      await cleanupWorkspace(workspaceDir);
+    }
+    return pipelineResult;
   }
 
-  if (
-    implementorHandoff.allowed_files.length === 0 ||
-    implementorHandoff.steps.length === 0
-  ) {
-    const error = "Planner did not provide executable steps or allowed files.";
-    const errorResult = withStep({ ok: false, error }, "implement");
-    await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
-    return errorResult;
-  }
+  try {
+    console.log(
+      `Models: planner=${getAgentModel("planner")}, implementor=${getAgentModel(
+        "implementor"
+      )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel(
+        "tester"
+      )}`
+    );
+    logAgentStart("planner");
+    const planResult = await runPlanner(params.task, resolvedConfig);
+    if (!planResult.ok || !planResult.value) {
+      await writeJson(`${context.run_dir}/plan.error.json`, planResult);
+      return planResult;
+    }
+    await writeJson(`${context.run_dir}/plan.json`, planResult.value);
 
-  let implementResult: OrchestratorResult<ImplementorResult> | null = null;
-  let reviewResult: OrchestratorResult<ReviewerDecisionResult> | null = null;
-  let rejectionReason = "";
+    const requiresTests = planResult.value.tasks.some(
+      (task) => task.requiresTests
+    );
+    if (!branchInfo) {
+      throw new Error("Failed to create work branch.");
+    }
+    const baseHandoff = createInitialHandoff({
+      run: {
+        id: context.run_id,
+        createdAt: context.task.created_at,
+        repo: {
+          root: repoRoot,
+          branch: branchInfo.branchName,
+          baseBranch: branchInfo.baseBranch,
+        },
+      },
+      task: {
+        id: context.task.task_id,
+        prompt: context.task.description,
+        mode: "full",
+      },
+      artifacts: {
+        task: "task.json",
+        plan: "plan.json",
+        implementation: "implementor.json",
+        review: "review.json",
+        tests: "test.json",
+        prDraft: "pr-draft.json",
+        handoff: "handoff.json",
+        handoffImplementor: "handoff.implementor.json",
+        handoffReview: "handoff.review.json",
+        handoffTest: "handoff.test.json",
+      },
+      constraints: {
+        estimatedFilesChangedLimit: planResult.value.scope.estimatedFilesChanged,
+        noBreakingChanges: !planResult.value.scope.breakingChange,
+        requireTestsForBehaviorChange: requiresTests,
+      },
+      next: {
+        agent: "implementer",
+        inputArtifacts: ["plan.json"],
+        instructions: [
+          "Implement the plan within allowed files.",
+          "Update handoff.json for reviewer.",
+        ],
+      },
+    });
 
-  for (
-    let attempt = 1;
-    attempt <= resolvedConfig.maxReviewRetries;
-    attempt += 1
-  ) {
-    implementResult = await runImplementor(implementorHandoff, resolvedConfig);
+    let runHandoff = updateHandoff({
+      handoff: baseHandoff,
+      phase: "plan",
+      status: "completed",
+      artifact: "plan.json",
+      endedAt: new Date().toISOString(),
+      next: baseHandoff.next,
+    });
+
+    await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+    await writeJson(`${context.run_dir}/handoff.implementor.json`, runHandoff);
+
+    logAgentStart("implementor");
+    let implementorHandoff: ImplementorHandoff;
+    try {
+      implementorHandoff = await buildHandoffFromPlan(
+        repoRoot,
+        planResult.value
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Invalid plan files.";
+      const errorResult = withStep({ ok: false, error: message }, "implement");
+      await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
+      return errorResult;
+    }
+
+    if (
+      implementorHandoff.allowed_files.length === 0 ||
+      implementorHandoff.steps.length === 0
+    ) {
+      const error = "Planner did not provide executable steps or allowed files.";
+      const errorResult = withStep({ ok: false, error }, "implement");
+      await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
+      return errorResult;
+    }
+
+    let implementResult: OrchestratorResult<ImplementorResult> | null = null;
+    let reviewResult: OrchestratorResult<ReviewerDecisionResult> | null = null;
+    let rejectionReason = "";
+
+    for (
+      let attempt = 1;
+      attempt <= resolvedConfig.maxReviewRetries;
+      attempt += 1
+    ) {
+    implementResult = await runImplementor(
+      implementorHandoff,
+      resolvedConfig,
+      repoRoot
+    );
     if (!implementResult.ok || !implementResult.value) {
       if (implementResult.diagnostic?.diff) {
         failedDiffIndex += 1;
@@ -785,7 +1063,11 @@ const runFullPipeline = async (
     await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
 
     logAgentStart("reviewer");
-    reviewResult = await runReviewer(implementorHandoff, implementResult.value);
+    reviewResult = await runReviewer(
+      implementorHandoff,
+      implementResult.value,
+      repoRoot
+    );
     if (!reviewResult.ok || !reviewResult.value) {
       await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
       return reviewResult;
@@ -890,7 +1172,12 @@ const runFullPipeline = async (
 
   logAgentStart("tester");
   const testResult = requiresTests
-    ? await runTester(implementorHandoff, implementResult.value, resolvedConfig)
+    ? await runTester(
+        implementorHandoff,
+        implementResult.value,
+        resolvedConfig,
+        repoRoot
+      )
     : { ok: true, value: null };
 
   if (requiresTests && (!testResult.ok || !testResult.value)) {
@@ -949,12 +1236,81 @@ const runFullPipeline = async (
     );
   }
 
+    if (githubToken.trim().length === 0) {
+      return withStep(
+        { ok: false, error: "GITHUB_TOKEN is required to create PRs." },
+        "pr"
+      );
+    }
+
+    const statusResult = await getGitStatus(repoRoot);
+    if (!statusResult.ok) {
+      return withStep({ ok: false, error: statusResult.error }, "pr");
+    }
+    if (statusResult.output.trim().length === 0) {
+      return withStep(
+        { ok: false, error: "No changes detected to commit." },
+        "pr"
+      );
+    }
+
+    const commitResult = await commitChanges(
+      repoRoot,
+      `chore: orchestrator update for ${task.description}`
+    );
+    if (!commitResult.ok) {
+      return withStep({ ok: false, error: commitResult.error }, "pr");
+    }
+
+    const pushResult = await runGitCommand(
+      ["push", "-u", "origin", baseHandoff.run.repo.branch],
+      repoRoot
+    );
+    if (!pushResult.ok) {
+      return withStep(
+        {
+          ok: false,
+          error: pushResult.stderr || pushResult.stdout || "Git push failed.",
+        },
+        "pr"
+      );
+    }
+
+    const prBody = [
+      `Task: ${task.description}`,
+      `Branch: ${baseHandoff.run.repo.branch}`,
+      `Base: ${baseHandoff.run.repo.baseBranch}`,
+    ].join("\n");
+
+    const prResult = await createPullRequest({
+      repoUrl: params.repoUrl,
+      token: githubToken,
+      head: baseHandoff.run.repo.branch,
+      base: baseHandoff.run.repo.baseBranch,
+      title: task.description,
+      body: prBody,
+    });
+
   await writeJson(`${context.run_dir}/pr-draft.json`, {
     task_id: task.task_id,
-    status: "pending_human_approval",
+    status: "ready_for_review",
+    repo: {
+      root: repoRoot,
+      branch: baseHandoff.run.repo.branch,
+      baseBranch: baseHandoff.run.repo.baseBranch,
+    },
+    pr: {
+      url: prResult.url,
+      number: prResult.number,
+    },
   });
 
-  return withStep({ ok: true, value: testResult.value }, "complete");
+    return withStep({ ok: true, value: testResult.value }, "complete");
+  } finally {
+    if (!keepWorkspace && workspaceDir.length > 0) {
+      await cleanupWorkspace(workspaceDir);
+    }
+  }
 };
 
 export {

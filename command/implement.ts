@@ -44,12 +44,16 @@ export const registerImplementCommand = (program: Command) => {
         );
         return;
       }
+      const repoRoot =
+        runHandoff.run?.repo?.root && runHandoff.run.repo.root.length > 0
+          ? runHandoff.run.repo.root
+          : process.cwd();
       const planFile = runHandoff.artifacts.plan ?? "plan.json";
       const planPath = resolve(runDir, planFile);
       const plan = await readPlanFile(planPath);
       let implementorHandoff;
       try {
-        implementorHandoff = await buildHandoffFromPlan(plan);
+        implementorHandoff = await buildHandoffFromPlan(repoRoot, plan);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Invalid plan files.";
@@ -76,7 +80,8 @@ export const registerImplementCommand = (program: Command) => {
 
       const result = await runImplementor(
         implementorHandoff,
-        defaultAgentRunOptions
+        defaultAgentRunOptions,
+        repoRoot
       );
 
       if (!result.ok || !result.value) {

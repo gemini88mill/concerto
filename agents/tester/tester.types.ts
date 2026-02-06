@@ -3,6 +3,7 @@ import type { ImplementorHandoff, ImplementorResult } from "../implementor/imple
 interface TesterInput {
   handoff: ImplementorHandoff;
   implementor_result: ImplementorResult;
+  repo_root: string;
   project_test_rules: string;
   test_framework: string;
   test_command: string;

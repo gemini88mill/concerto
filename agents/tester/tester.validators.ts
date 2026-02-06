@@ -49,6 +49,7 @@ const testerInputSchema = z.object({
     blockedReason: z.string(),
     escalation: z.string(),
   }),
+  repo_root: z.string().min(1),
   project_test_rules: z.string().min(1),
   test_framework: z.string().min(1),
   test_command: z.string().min(1),
@@ -195,7 +196,10 @@ const validateImplementorOutput = (
   return buildOkResult(result);
 };
 
-const runTests = async (command: string): Promise<{ ok: boolean; logs: string }> => {
+const runTests = async (
+  command: string,
+  cwd: string
+): Promise<{ ok: boolean; logs: string }> => {
   const parts = command.split(" ").filter((part) => part.length > 0);
   const [cmd, ...args] = parts;
   if (!cmd) {
@@ -204,6 +208,7 @@ const runTests = async (command: string): Promise<{ ok: boolean; logs: string }>
 
   const proc = Bun.spawn({
     cmd: [cmd, ...args],
+    cwd,
     stdout: "pipe",
     stderr: "pipe",
   });
