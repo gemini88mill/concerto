@@ -25,6 +25,15 @@ interface InjectedFile {
   content: string;
 }
 
+interface ReviewFeedback {
+  decision: "approved" | "rejected" | "blocked";
+  notes: string[];
+  required_actions: string[];
+  reasons: string[];
+  reason: string;
+  suggested_escalation: string;
+}
+
 interface ImplementorHandoff {
   handoff_version: "1.0.0";
   task: ImplementorTask;
@@ -32,6 +41,7 @@ interface ImplementorHandoff {
   constraints: ImplementorConstraints;
   steps: ImplementorStep[];
   injected_files: InjectedFile[];
+  review_feedback?: ReviewFeedback;
 }
 
 interface ImplementorResult {
@@ -97,5 +107,6 @@ export type {
   ImplementorRunContext,
   InjectedFile,
   ProposedAction,
+  ReviewFeedback,
   ValidationResult,
 };

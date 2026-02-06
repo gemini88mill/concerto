@@ -75,6 +75,7 @@ const buildUserInput = (step: ImplementorStep, handoff: ImplementorHandoff) => {
     task: handoff.task,
     constraints: handoff.constraints,
     allowed_files: handoff.allowed_files,
+    review_feedback: handoff.review_feedback ?? null,
     step,
     injected_file: injectedFile ?? null,
   };

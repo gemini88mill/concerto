@@ -77,6 +77,26 @@
           "content": { "type": "string" }
         }
       }
+    },
+    "review_feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "notes",
+        "required_actions",
+        "reasons",
+        "reason",
+        "suggested_escalation"
+      ],
+      "properties": {
+        "decision": { "type": "string", "enum": ["approved", "rejected", "blocked"] },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "required_actions": { "type": "array", "items": { "type": "string" } },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string" },
+        "suggested_escalation": { "type": "string" }
+      }
     }
   }
 }

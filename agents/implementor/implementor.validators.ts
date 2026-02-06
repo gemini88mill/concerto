@@ -40,6 +40,16 @@ const handoffSchema = z.object({
       content: z.string(),
     })
   ),
+  review_feedback: z
+    .object({
+      decision: z.enum(["approved", "rejected", "blocked"]),
+      notes: z.array(z.string()),
+      required_actions: z.array(z.string()),
+      reasons: z.array(z.string()),
+      reason: z.string(),
+      suggested_escalation: z.string(),
+    })
+    .optional(),
 });
 
 const resultSchema = z.object({

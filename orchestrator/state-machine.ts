@@ -840,6 +840,17 @@ const runFullPipeline = async (
 
     rejectionReason = reviewResult.value.reasons.join(" ");
     if (attempt < resolvedConfig.maxReviewRetries) {
+      implementorHandoff = {
+        ...implementorHandoff,
+        review_feedback: {
+          decision: reviewResult.value.decision,
+          notes: reviewResult.value.notes,
+          required_actions: reviewResult.value.required_actions,
+          reasons: reviewResult.value.reasons,
+          reason: reviewResult.value.reason,
+          suggested_escalation: reviewResult.value.suggested_escalation,
+        },
+      };
       logAgentStart("implementor");
       continue;
     }
