@@ -15,7 +15,10 @@ per run under `.orchestrator/runs/<task_id>/`.
 
 ## CLI
 
-- `orchestrator run "<task>" --repo <git_url>` runs the full pipeline on a cloned repo.
+- `orchestrator run "<task>" --repo <git_url>` queues a run and returns a `run_id`.
+- `orchestrator run "<task>" --repo <git_url> --start-worker` queues a run and starts a background worker.
+- `orchestrator worker` runs the queue worker loop.
+- `orchestrator status [run_id]` shows the latest run state (or a specific run).
 - `orchestrator plan "<task>"` runs planning only.
 - `orchestrator implement --run <path>` runs implementor only.
 - `orchestrator review --run <path>` runs reviewer only.

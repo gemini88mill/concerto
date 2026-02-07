@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { logger } from "../core/logger";
 
 interface PrOptions {
   fromRun: string;
@@ -7,9 +8,11 @@ interface PrOptions {
 export const registerPrCommand = (program: Command) => {
   program
     .command("pr")
-    .description("Run S5 → S7 with human checkpoint.")
+    .description("Prepare PR artifacts for a completed run (manual publishing).")
     .requiredOption("--from-run <path>", "Path to orchestrator run directory.")
     .action(async (options: PrOptions) => {
-      console.log(`PR creation is not wired yet. Use artifacts in ${options.fromRun}.`);
+      logger.info(
+        `PR creation is not wired yet. Use artifacts in ${options.fromRun}.`
+      );
     });
 };

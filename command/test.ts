@@ -14,6 +14,7 @@ import {
   successOutput,
   toStepOutput,
 } from "./shared";
+import { logger } from "../core/logger";
 
 interface TestOptions {
   run?: string;
@@ -22,10 +23,10 @@ interface TestOptions {
 export const registerTestCommand = (program: Command) => {
   program
     .command("test")
-    .description("Run S4 only.")
+    .description("Run tester only; executes tests and records results.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: TestOptions) => {
-      console.log(stepStartLine("tester"));
+      logger.info(stepStartLine("tester"));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);

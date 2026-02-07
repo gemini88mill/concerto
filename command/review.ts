@@ -16,6 +16,7 @@ import {
   successOutput,
   toStepOutput,
 } from "./shared";
+import { logger } from "../core/logger";
 
 interface ReviewOptions {
   run?: string;
@@ -24,10 +25,10 @@ interface ReviewOptions {
 export const registerReviewCommand = (program: Command) => {
   program
     .command("review")
-    .description("Run S3 only.")
+    .description("Run reviewer only; evaluates the implementation vs plan.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: ReviewOptions) => {
-      console.log(stepStartLine("reviewer"));
+      logger.info(stepStartLine("reviewer"));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);

@@ -20,3 +20,7 @@ This is where the todos are for this project to be viable
   - chalk.js
 - Dashboard (Like hangfire but simplier)
 - customizable agents and agent flows
+
+## bugs
+
+- seems liek pr isn't getting sent to github

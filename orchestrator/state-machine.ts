@@ -24,6 +24,13 @@ import type {
   OrchestratorResult,
   OrchestratorTask,
 } from "./orchestrator.types";
+import { logger } from "../core/logger";
+import {
+  cloneRepo,
+  createWorkBranch,
+  resolveBaseBranch,
+  runGitCommand,
+} from "./git";
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
   maxPlanRetries: 2,
@@ -33,93 +40,8 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   testFramework: "vitest",
 };
 
-const WORKSPACES_ROOT = ".orchestrator/workspaces";
-
-const runGitCommand = async (args: string[], cwd: string) => {
-  const proc = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  return {
-    ok: exitCode === 0,
-    stdout,
-    stderr,
-    exitCode,
-  };
-};
-
-const ensureWorkspaceRoot = async () => {
-  const root = join(process.cwd(), WORKSPACES_ROOT);
-  await mkdir(root, { recursive: true });
-  return root;
-};
-
-const cloneRepo = async (repoUrl: string, runId: string) => {
-  const workspaceRoot = await ensureWorkspaceRoot();
-  const workspaceDir = join(workspaceRoot, runId);
-  await rm(workspaceDir, { recursive: true, force: true });
-
-  const cloneResult = await runGitCommand(
-    ["clone", "--depth", "1", repoUrl, workspaceDir],
-    process.cwd()
-  );
-  if (!cloneResult.ok) {
-    const message = cloneResult.stderr || cloneResult.stdout || "Unknown error.";
-    throw new Error(`Git clone failed: ${message}`);
-  }
-
-  return workspaceDir;
-};
-
-const slugifyBranchName = (value: string) => {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-+/g, "-");
-  if (normalized.length === 0) {
-    return "task";
-  }
-  return normalized.length > 60 ? normalized.slice(0, 60) : normalized;
-};
-
-const createWorkBranch = async (
-  repoRoot: string,
-  taskDescription: string
-) => {
-  const baseBranch = await getCurrentBranch(repoRoot);
-  const branchName = `concerto/${slugifyBranchName(taskDescription)}`;
-  const result = await runGitCommand(
-    ["checkout", "-b", branchName],
-    repoRoot
-  );
-  if (!result.ok) {
-    const message = result.stderr || result.stdout || "Unknown error.";
-    throw new Error(`Git branch creation failed: ${message}`);
-  }
-  return { branchName, baseBranch };
-};
-
 const cleanupWorkspace = async (workspaceDir: string) => {
   await rm(workspaceDir, { recursive: true, force: true });
-};
-
-const getCurrentBranch = async (repoRoot: string) => {
-  const result = await runGitCommand(
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    repoRoot
-  );
-  if (!result.ok) {
-    return "";
-  }
-  return result.stdout.trim();
 };
 
 interface RepoInfo {
@@ -205,7 +127,10 @@ const createPullRequest = async (params: {
 const getGitStatus = async (repoRoot: string) => {
   const result = await runGitCommand(["status", "--porcelain"], repoRoot);
   if (!result.ok) {
-    return { ok: false, error: result.stderr || result.stdout || "Git status failed." };
+    return {
+      ok: false,
+      error: result.stderr || result.stdout || "Git status failed.",
+    };
   }
   return { ok: true, output: result.stdout };
 };
@@ -252,9 +177,7 @@ const resolveRepoPath = (repoRoot: string, filePath: string) => {
   const resolvedPath = resolve(resolvedRoot, filePath);
   const rootLower = resolvedRoot.toLowerCase();
   const pathLower = resolvedPath.toLowerCase();
-  const rootPrefix = resolvedRoot.endsWith(sep)
-    ? rootLower
-    : rootLower + sep;
+  const rootPrefix = resolvedRoot.endsWith(sep) ? rootLower : rootLower + sep;
 
   if (pathLower !== rootLower && !pathLower.startsWith(rootPrefix)) {
     throw new Error(`Path escapes repo root: ${filePath}`);
@@ -292,7 +215,7 @@ const getAgentModel = (
 const logAgentStart = (
   agent: "planner" | "implementor" | "reviewer" | "tester"
 ) => {
-  console.log(`Step: ${agent} - started (model=${getAgentModel(agent)})`);
+  logger.info(`Step: ${agent} - started (model=${getAgentModel(agent)})`);
 };
 
 const createTask = (description: string): OrchestratorTask => {
@@ -395,16 +318,6 @@ const getGitDiffForPaths = async (repoRoot: string, paths: string[]) => {
   };
 };
 
-interface DiffApplyResult {
-  content: string;
-  deleted: boolean;
-}
-
-interface DiffFileSection {
-  filePath: string;
-  lines: string[];
-}
-
 interface ResolvedPlanFiles {
   allowedFiles: string[];
   steps: ImplementorStep[];
@@ -472,129 +385,6 @@ const resolvePlanFiles = async (
     errors,
   };
 };
-
-const splitDiffByFile = (diff: string): DiffFileSection[] => {
-  const sections: DiffFileSection[] = [];
-  let current: DiffFileSection | null = null;
-
-  const lines = diff.split("\n");
-  for (const line of lines) {
-    if (line.startsWith("diff --git ")) {
-      if (current) {
-        sections.push(current);
-      }
-      const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-      const filePath = match?.[2] ?? "";
-      current = { filePath, lines: [line] };
-      continue;
-    }
-    if (current) {
-      current.lines.push(line);
-    }
-  }
-
-  if (current) {
-    sections.push(current);
-  }
-
-  return sections;
-};
-
-const parseHunkHeader = (line: string) => {
-  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-  if (!match) {
-    return null;
-  }
-  return {
-    oldStart: Number(match[1]),
-    oldCount: match[2] ? Number(match[2]) : 1,
-    newStart: Number(match[3]),
-    newCount: match[4] ? Number(match[4]) : 1,
-  };
-};
-
-const applyUnifiedDiff = (
-  content: string,
-  diffLines: string[]
-): string | null => {
-  const sourceLines = content.split("\n");
-  const output: string[] = [];
-  let sourceIndex = 0;
-
-  let i = 0;
-  while (i < diffLines.length) {
-    const line = diffLines[i];
-    if (!line?.startsWith("@@")) {
-      i += 1;
-      continue;
-    }
-
-    const header = parseHunkHeader(line ?? "");
-    if (!header) {
-      return null;
-    }
-
-    const targetIndex = Math.max(0, header.oldStart - 1);
-    while (sourceIndex < targetIndex && sourceIndex < sourceLines.length) {
-      output.push(sourceLines[sourceIndex] ?? "");
-      sourceIndex += 1;
-    }
-
-    i += 1;
-    while (i < diffLines.length && !diffLines[i]?.startsWith("@@")) {
-      const hunkLine = diffLines[i];
-      if (hunkLine?.startsWith(" ")) {
-        output.push(hunkLine?.slice(1) ?? "");
-        sourceIndex += 1;
-      } else if (hunkLine?.startsWith("-")) {
-        sourceIndex += 1;
-      } else if (hunkLine?.startsWith("+")) {
-        output.push(hunkLine?.slice(1) ?? "");
-      } else if (
-        hunkLine?.startsWith("\\") &&
-        hunkLine?.includes("No newline")
-      ) {
-        // ignore
-      } else if (hunkLine?.startsWith("diff --git ")) {
-        break;
-      }
-      i += 1;
-    }
-  }
-
-  while (sourceIndex < sourceLines.length) {
-    output.push(sourceLines[sourceIndex] ?? "");
-    sourceIndex += 1;
-  }
-
-  return output.join("\n");
-};
-
-// const applyDiffToContent = (
-//   diff: string,
-//   filePath: string,
-//   content: string
-// ): DiffApplyResult | null => {
-//   const sections = splitDiffByFile(diff);
-//   const section = sections.find((item) => item.filePath === filePath);
-//   if (!section) {
-//     return { content, deleted: false };
-//   }
-
-//   const deleted = section.lines.some((line) =>
-//     line.startsWith("deleted file mode")
-//   );
-//   if (deleted) {
-//     return { content: "", deleted: true };
-//   }
-
-//   const updated = applyUnifiedDiff(content, section.lines);
-//   if (updated === null) {
-//     return null;
-//   }
-
-//   return { content: updated, deleted: false };
-// };
 
 const buildHandoffFromPlan = async (
   repoRoot: string,
@@ -874,6 +664,7 @@ interface RunPipelineParams {
   repoUrl: string;
   keepWorkspace?: boolean;
   config?: Partial<OrchestratorConfig>;
+  baseBranch?: string;
 }
 
 const runFullPipeline = async (params: RunPipelineParams) => {
@@ -891,6 +682,7 @@ const runFullPipeline = async (params: RunPipelineParams) => {
   try {
     workspaceDir = await cloneRepo(params.repoUrl, task.task_id);
     repoRoot = workspaceDir;
+    await resolveBaseBranch(repoRoot, params.baseBranch);
     branchInfo = await createWorkBranch(repoRoot, task.description);
   } catch (error) {
     const message =
@@ -904,7 +696,7 @@ const runFullPipeline = async (params: RunPipelineParams) => {
   }
 
   try {
-    console.log(
+    logger.info(
       `Models: planner=${getAgentModel("planner")}, implementor=${getAgentModel(
         "implementor"
       )}, reviewer=${getAgentModel("reviewer")}, tester=${getAgentModel(
@@ -953,7 +745,8 @@ const runFullPipeline = async (params: RunPipelineParams) => {
         handoffTest: "handoff.test.json",
       },
       constraints: {
-        estimatedFilesChangedLimit: planResult.value.scope.estimatedFilesChanged,
+        estimatedFilesChangedLimit:
+          planResult.value.scope.estimatedFilesChanged,
         noBreakingChanges: !planResult.value.scope.breakingChange,
         requireTestsForBehaviorChange: requiresTests,
       },
@@ -998,7 +791,8 @@ const runFullPipeline = async (params: RunPipelineParams) => {
       implementorHandoff.allowed_files.length === 0 ||
       implementorHandoff.steps.length === 0
     ) {
-      const error = "Planner did not provide executable steps or allowed files.";
+      const error =
+        "Planner did not provide executable steps or allowed files.";
       const errorResult = withStep({ ok: false, error }, "implement");
       await writeJson(`${context.run_dir}/implementor.error.json`, errorResult);
       return errorResult;
@@ -1013,228 +807,230 @@ const runFullPipeline = async (params: RunPipelineParams) => {
       attempt <= resolvedConfig.maxReviewRetries;
       attempt += 1
     ) {
-    implementResult = await runImplementor(
-      implementorHandoff,
-      resolvedConfig,
-      repoRoot
-    );
-    if (!implementResult.ok || !implementResult.value) {
-      if (implementResult.diagnostic?.diff) {
-        failedDiffIndex += 1;
+      implementResult = await runImplementor(
+        implementorHandoff,
+        resolvedConfig,
+        repoRoot
+      );
+      if (!implementResult.ok || !implementResult.value) {
+        if (implementResult.diagnostic?.diff) {
+          failedDiffIndex += 1;
+          await writeJson(
+            `${context.run_dir}/implementor.failed.${failedDiffIndex}.json`,
+            {
+              step: implementResult.step ?? "implement",
+              error: implementResult.error ?? "Implementor failed.",
+              diagnostic: implementResult.diagnostic,
+            }
+          );
+        }
         await writeJson(
-          `${context.run_dir}/implementor.failed.${failedDiffIndex}.json`,
-          {
-            step: implementResult.step ?? "implement",
-            error: implementResult.error ?? "Implementor failed.",
-            diagnostic: implementResult.diagnostic,
-          }
+          `${context.run_dir}/implementor.error.json`,
+          implementResult
         );
+        return implementResult;
       }
       await writeJson(
-        `${context.run_dir}/implementor.error.json`,
-        implementResult
+        `${context.run_dir}/implementor.json`,
+        implementResult.value
       );
-      return implementResult;
-    }
-    await writeJson(
-      `${context.run_dir}/implementor.json`,
-      implementResult.value
-    );
 
-    runHandoff = updateHandoff({
-      handoff: runHandoff,
-      phase: "implement",
-      status: "completed",
-      artifact: "implementor.json",
-      endedAt: new Date().toISOString(),
-      artifacts: {
-        implementation: "implementor.json",
-      },
-      next: {
-        agent: "reviewer",
-        inputArtifacts: ["plan.json", "implementor.json"],
-        instructions: [
-          "Review the implementation against the plan and project guidelines.",
-          "If rejecting, provide actionable fixes only; do not implement.",
-        ],
-      },
-    });
-    await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-    await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
-
-    logAgentStart("reviewer");
-    reviewResult = await runReviewer(
-      implementorHandoff,
-      implementResult.value,
-      repoRoot
-    );
-    if (!reviewResult.ok || !reviewResult.value) {
-      await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
-      return reviewResult;
-    }
-    await writeJson(`${context.run_dir}/review.json`, reviewResult.value);
-
-    const reviewApproved = reviewResult.value.decision === "approved";
-    const reviewNext = reviewApproved
-      ? {
-          agent: "tester",
-          inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+      runHandoff = updateHandoff({
+        handoff: runHandoff,
+        phase: "implement",
+        status: "completed",
+        artifact: "implementor.json",
+        endedAt: new Date().toISOString(),
+        artifacts: {
+          implementation: "implementor.json",
+        },
+        next: {
+          agent: "reviewer",
+          inputArtifacts: ["plan.json", "implementor.json"],
           instructions: [
-            "Add or update tests if required by the plan.",
-            "Run the configured test command and report results.",
+            "Review the implementation against the plan and project guidelines.",
+            "If rejecting, provide actionable fixes only; do not implement.",
+          ],
+        },
+      });
+      await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+      await writeJson(`${context.run_dir}/handoff.review.json`, runHandoff);
+
+      logAgentStart("reviewer");
+      reviewResult = await runReviewer(
+        implementorHandoff,
+        implementResult.value,
+        repoRoot
+      );
+      if (!reviewResult.ok || !reviewResult.value) {
+        await writeJson(`${context.run_dir}/review.error.json`, reviewResult);
+        return reviewResult;
+      }
+      await writeJson(`${context.run_dir}/review.json`, reviewResult.value);
+
+      const reviewApproved = reviewResult.value.decision === "approved";
+      const reviewNext = reviewApproved
+        ? {
+            agent: "tester",
+            inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+            instructions: [
+              "Add or update tests if required by the plan.",
+              "Run the configured test command and report results.",
+            ],
+          }
+        : {
+            agent: "implementer",
+            inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+            instructions: [
+              "Address review feedback and update the implementation.",
+            ],
+          };
+
+      runHandoff = updateHandoff({
+        handoff: runHandoff,
+        phase: "review",
+        status: "completed",
+        artifact: "review.json",
+        endedAt: new Date().toISOString(),
+        artifacts: {
+          review: "review.json",
+        },
+        next: reviewNext,
+      });
+      await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
+      if (reviewNext.agent === "tester") {
+        await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+      }
+
+      if (reviewResult.value.decision === "approved") {
+        break;
+      }
+
+      if (reviewResult.value.decision === "blocked") {
+        return {
+          ok: false,
+          error: `Reviewer blocked: ${reviewResult.value.reason}`,
+          step: "review",
+        };
+      }
+
+      rejectionReason = reviewResult.value.reasons.join(" ");
+      if (attempt < resolvedConfig.maxReviewRetries) {
+        implementorHandoff = {
+          ...implementorHandoff,
+          review_feedback: {
+            decision: reviewResult.value.decision,
+            notes: reviewResult.value.notes,
+            required_actions: reviewResult.value.required_actions,
+            reasons: reviewResult.value.reasons,
+            reason: reviewResult.value.reason,
+            suggested_escalation: reviewResult.value.suggested_escalation,
+          },
+        };
+        logAgentStart("implementor");
+        continue;
+      }
+
+      return {
+        ok: false,
+        error: `Reviewer rejected: ${rejectionReason || "No reason provided."}`,
+        step: "review",
+      };
+    }
+
+    if (
+      !implementResult ||
+      !implementResult.value ||
+      !reviewResult ||
+      !reviewResult.value
+    ) {
+      return {
+        ok: false,
+        error: "Implementation or review missing.",
+        step: "review",
+      };
+    }
+
+    if (!requiresTests) {
+      const skippedResult = {
+        task_id: implementorHandoff.task.id,
+        status: "passed",
+        tests_added: [],
+        test_summary: "Tests not required for this run.",
+        coverage_notes: [],
+        reason: "Tests skipped by policy.",
+        logs: "",
+      };
+      await writeJson(`${context.run_dir}/test.json`, skippedResult);
+    }
+
+    logAgentStart("tester");
+    const testResult = requiresTests
+      ? await runTester(
+          implementorHandoff,
+          implementResult.value,
+          resolvedConfig,
+          repoRoot
+        )
+      : { ok: true, value: null };
+
+    if (requiresTests && (!testResult.ok || !testResult.value)) {
+      await writeJson(`${context.run_dir}/test.error.json`, testResult);
+      return testResult;
+    }
+
+    if (requiresTests && testResult.value) {
+      await writeJson(`${context.run_dir}/test.json`, testResult.value);
+    }
+
+    const testsPassed = requiresTests
+      ? testResult.value?.status === "passed"
+      : true;
+    const testNext = testsPassed
+      ? {
+          agent: "pr",
+          inputArtifacts: [
+            "plan.json",
+            "implementor.json",
+            "review.json",
+            "test.json",
+          ],
+          instructions: [
+            "Prepare a PR draft based on the approved implementation and tests.",
           ],
         }
       : {
           agent: "implementer",
-          inputArtifacts: ["plan.json", "implementor.json", "review.json"],
+          inputArtifacts: [
+            "plan.json",
+            "implementor.json",
+            "review.json",
+            "test.json",
+          ],
           instructions: [
-            "Address review feedback and update the implementation.",
+            "Fix implementation issues that caused test failures.",
           ],
         };
 
     runHandoff = updateHandoff({
       handoff: runHandoff,
-      phase: "review",
+      phase: "test",
       status: "completed",
-      artifact: "review.json",
+      artifact: "test.json",
       endedAt: new Date().toISOString(),
       artifacts: {
-        review: "review.json",
+        tests: "test.json",
       },
-      next: reviewNext,
+      next: testNext,
     });
     await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-    if (reviewNext.agent === "tester") {
-      await writeJson(`${context.run_dir}/handoff.test.json`, runHandoff);
+
+    if (requiresTests && testResult.value?.status !== "passed") {
+      return withStep(
+        { ok: false, error: `Tester status: ${testResult.value?.status}` },
+        "test"
+      );
     }
-
-    if (reviewResult.value.decision === "approved") {
-      break;
-    }
-
-    if (reviewResult.value.decision === "blocked") {
-      return {
-        ok: false,
-        error: `Reviewer blocked: ${reviewResult.value.reason}`,
-        step: "review",
-      };
-    }
-
-    rejectionReason = reviewResult.value.reasons.join(" ");
-    if (attempt < resolvedConfig.maxReviewRetries) {
-      implementorHandoff = {
-        ...implementorHandoff,
-        review_feedback: {
-          decision: reviewResult.value.decision,
-          notes: reviewResult.value.notes,
-          required_actions: reviewResult.value.required_actions,
-          reasons: reviewResult.value.reasons,
-          reason: reviewResult.value.reason,
-          suggested_escalation: reviewResult.value.suggested_escalation,
-        },
-      };
-      logAgentStart("implementor");
-      continue;
-    }
-
-    return {
-      ok: false,
-      error: `Reviewer rejected: ${rejectionReason || "No reason provided."}`,
-      step: "review",
-    };
-  }
-
-  if (
-    !implementResult ||
-    !implementResult.value ||
-    !reviewResult ||
-    !reviewResult.value
-  ) {
-    return {
-      ok: false,
-      error: "Implementation or review missing.",
-      step: "review",
-    };
-  }
-
-  if (!requiresTests) {
-    const skippedResult = {
-      task_id: implementorHandoff.task.id,
-      status: "passed",
-      tests_added: [],
-      test_summary: "Tests not required for this run.",
-      coverage_notes: [],
-      reason: "Tests skipped by policy.",
-      logs: "",
-    };
-    await writeJson(`${context.run_dir}/test.json`, skippedResult);
-  }
-
-  logAgentStart("tester");
-  const testResult = requiresTests
-    ? await runTester(
-        implementorHandoff,
-        implementResult.value,
-        resolvedConfig,
-        repoRoot
-      )
-    : { ok: true, value: null };
-
-  if (requiresTests && (!testResult.ok || !testResult.value)) {
-    await writeJson(`${context.run_dir}/test.error.json`, testResult);
-    return testResult;
-  }
-
-  if (requiresTests && testResult.value) {
-    await writeJson(`${context.run_dir}/test.json`, testResult.value);
-  }
-
-  const testsPassed = requiresTests
-    ? testResult.value?.status === "passed"
-    : true;
-  const testNext = testsPassed
-    ? {
-        agent: "pr",
-        inputArtifacts: [
-          "plan.json",
-          "implementor.json",
-          "review.json",
-          "test.json",
-        ],
-        instructions: [
-          "Prepare a PR draft based on the approved implementation and tests.",
-        ],
-      }
-    : {
-        agent: "implementer",
-        inputArtifacts: [
-          "plan.json",
-          "implementor.json",
-          "review.json",
-          "test.json",
-        ],
-        instructions: ["Fix implementation issues that caused test failures."],
-      };
-
-  runHandoff = updateHandoff({
-    handoff: runHandoff,
-    phase: "test",
-    status: "completed",
-    artifact: "test.json",
-    endedAt: new Date().toISOString(),
-    artifacts: {
-      tests: "test.json",
-    },
-    next: testNext,
-  });
-  await writeJson(`${context.run_dir}/handoff.json`, runHandoff);
-
-  if (requiresTests && testResult.value?.status !== "passed") {
-    return withStep(
-      { ok: false, error: `Tester status: ${testResult.value?.status}` },
-      "test"
-    );
-  }
 
     if (githubToken.trim().length === 0) {
       return withStep(
@@ -1247,7 +1043,7 @@ const runFullPipeline = async (params: RunPipelineParams) => {
     if (!statusResult.ok) {
       return withStep({ ok: false, error: statusResult.error }, "pr");
     }
-    if (statusResult.output.trim().length === 0) {
+    if (statusResult.output?.trim().length === 0) {
       return withStep(
         { ok: false, error: "No changes detected to commit." },
         "pr"
@@ -1291,19 +1087,19 @@ const runFullPipeline = async (params: RunPipelineParams) => {
       body: prBody,
     });
 
-  await writeJson(`${context.run_dir}/pr-draft.json`, {
-    task_id: task.task_id,
-    status: "ready_for_review",
-    repo: {
-      root: repoRoot,
-      branch: baseHandoff.run.repo.branch,
-      baseBranch: baseHandoff.run.repo.baseBranch,
-    },
-    pr: {
-      url: prResult.url,
-      number: prResult.number,
-    },
-  });
+    await writeJson(`${context.run_dir}/pr-draft.json`, {
+      task_id: task.task_id,
+      status: "ready_for_review",
+      repo: {
+        root: repoRoot,
+        branch: baseHandoff.run.repo.branch,
+        baseBranch: baseHandoff.run.repo.baseBranch,
+      },
+      pr: {
+        url: prResult.url,
+        number: prResult.number,
+      },
+    });
 
     return withStep({ ok: true, value: testResult.value }, "complete");
   } finally {

@@ -129,6 +129,34 @@ const createInitialHandoff = (params: {
   };
 };
 
+const createQueuedHandoff = (params: {
+  run: RunInfo;
+  task: TaskInfo;
+  iteration?: number;
+  maxIterations?: number;
+  artifacts: RunHandoff["artifacts"];
+  constraints?: RunHandoff["constraints"];
+  budgets?: RunHandoff["budgets"];
+  next?: HandoffNext;
+}): RunHandoff => {
+  return {
+    run: params.run,
+    task: params.task,
+    state: {
+      phase: "queue",
+      status: "queued",
+      iteration: params.iteration ?? 1,
+      maxIterations: params.maxIterations ?? 3,
+      history: [],
+    },
+    constraints: params.constraints,
+    budgets: params.budgets,
+    artifacts: params.artifacts,
+    next: params.next,
+    notes: [],
+  };
+};
+
 const appendHistory = (
   handoff: RunHandoff,
   entry: HandoffHistoryItem
@@ -175,4 +203,4 @@ const updateHandoff = (params: {
   };
 };
 
-export { createInitialHandoff, isRunHandoff, updateHandoff };
+export { createInitialHandoff, createQueuedHandoff, isRunHandoff, updateHandoff };

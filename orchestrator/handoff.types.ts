@@ -2,12 +2,14 @@ interface RunRepoInfo {
   root: string;
   branch: string;
   baseBranch: string;
+  url?: string;
 }
 
 interface RunInfo {
   id: string;
   createdAt: string;
   repo: RunRepoInfo;
+  keepWorkspace?: boolean;
 }
 
 interface TaskInfo {

@@ -16,6 +16,7 @@ import {
   successOutput,
   toStepOutput,
 } from "./shared";
+import { logger } from "../core/logger";
 
 interface ImplementOptions {
   run?: string;
@@ -24,10 +25,10 @@ interface ImplementOptions {
 export const registerImplementCommand = (program: Command) => {
   program
     .command("implement")
-    .description("Run S2 only.")
+    .description("Run implementor only; applies planned changes to the repo.")
     .option("--run <path>", "Path to orchestrator run directory.")
     .action(async (options: ImplementOptions) => {
-      console.log(stepStartLine("implementor"));
+      logger.info(stepStartLine("implementor"));
       const runDir = await resolveRunDir(options.run);
       const handoffPath = resolve(runDir, "handoff.json");
       const runHandoff = await readRunHandoffFile(handoffPath);

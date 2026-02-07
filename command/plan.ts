@@ -8,13 +8,14 @@ import {
   successOutput,
   toStepOutput,
 } from "./shared";
+import { logger } from "../core/logger";
 
 export const registerPlanCommand = (program: Command) => {
   program
     .command("plan <task>")
-    .description("Run S0 → S1 only, output PlanHandoff.")
+    .description("Generate a plan only; writes plan + handoff artifacts.")
     .action(async (task: string) => {
-      console.log(stepStartLine("planner"));
+      logger.info(stepStartLine("planner"));
       const taskRecord = createTask(task);
       const context = await createRunContext(taskRecord);
 
